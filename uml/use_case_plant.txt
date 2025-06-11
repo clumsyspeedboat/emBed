@@ -1,0 +1,68 @@
+@startuml
+
+left to right direction
+skinparam packageStyle rectangle
+actor Data_Producer
+actor Data_Consumer
+actor Admin
+
+package "Embedding Indexing & Retrieval System" {
+  
+  package "Data Intake and Storage" {
+    usecase "Upload Embedding Data" as UploadData
+    usecase "Store Data in MinIO (S3)" as StoreMinIO
+    usecase "Versioning and Data Management" as Versioning
+  }
+
+  package "Indexing Methods" {
+    usecase "LanceDB" as IndexLanceDB
+    usecase "HNSW" as IndexHNSW
+    usecase "K-means" as IndexKmeans
+    usecase "BLISS" as IndexBLISS
+  }
+
+  package "Query and Retrieval Module" {
+    usecase "Query Embeddings" as QueryEmbeddings
+    usecase "Top-K Retrieval" as TopK
+    usecase "Bucket / Hash Assignment" as BucketAssignment
+    usecase "Rank Results" as RankResults
+  }
+
+  package "System Administration" {
+    usecase "Monitor System Performance" as MonitorPerformance
+    usecase "Manage Indexes" as ManageIndexes
+    usecase "Perform Maintenance" as Maintenance
+  }
+}
+
+'Relations
+Data_Producer --> UploadData
+Data_Producer --> QueryEmbeddings
+Data_Producer --> TopK
+
+Data_Consumer --> QueryEmbeddings
+Data_Consumer --> TopK
+Data_Consumer --> RankResults
+
+Admin --> MonitorPerformance
+Admin --> ManageIndexes
+Admin --> Maintenance
+
+UploadData --> StoreMinIO
+StoreMinIO --> Versioning
+
+StoreMinIO --> IndexLanceDB
+StoreMinIO --> IndexHNSW
+StoreMinIO --> IndexKmeans
+StoreMinIO --> IndexBLISS
+
+QueryEmbeddings --> IndexLanceDB
+QueryEmbeddings --> IndexHNSW
+QueryEmbeddings --> IndexKmeans
+QueryEmbeddings --> IndexBLISS
+
+QueryEmbeddings --> BucketAssignment
+BucketAssignment --> TopK
+TopK --> RankResults
+
+@enduml
