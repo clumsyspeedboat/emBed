@@ -126,7 +126,7 @@ def _summarize_keys(keys: Iterable[str], show=20):
 
 
 def cmd_ls_s3(bucket: str, prefix: str, limit: int, minio: MinioConfig) -> None:
-    s3 = MinioClient(minio)
+    s3 = MinIOClient(minio)
     keys = s3.list_objects(bucket, prefix or "")
     heading(f"S3 List: s3://{bucket}/{prefix}")
     if not keys:
@@ -143,12 +143,16 @@ def cmd_ls_s3(bucket: str, prefix: str, limit: int, minio: MinioConfig) -> None:
 
 def cmd_ingest(bucket: str, prefix: str, table: str, minio: MinioConfig, lcfg: LanceDBConfig,
                include_ext: Optional[list[str]], exclude_ext: Optional[list[str]],
-               max_files: Optional[int], dry_run: bool, mode: str) -> None:
+               max_files: Optional[int], dry_run: bool, mode: str, create_index: bool) -> None:
     manager = LanceDBManager(lcfg)
     s3 = MinIOClient(minio)
-    ingest_s3_objects(manager, s3, bucket, prefix or "", table,
-                      include_ext=include_ext, exclude_ext=exclude_ext,
-                      max_files=max_files, dry_run=dry_run, mode=mode)
+    rows_ingested = ingest_s3_objects(manager, s3, bucket, prefix or "", table,
+                                      include_ext=include_ext, exclude_ext=exclude_ext,
+                                      max_files=max_files, dry_run=dry_run, mode=mode)
+    
+    if create_index and not dry_run and rows_ingested > 0:
+        echo("\n--- Auto-creating index post-ingestion ---")
+        cmd_create_index(table, lcfg)
 
 
 def cmd_create_index(table: str, lcfg: LanceDBConfig) -> None:
@@ -240,7 +244,6 @@ def build_parser() -> argparse.ArgumentParser:
     pls.add_argument("--prefix", nargs="?", const="", default="", help="Optional prefix (empty = root)")
     pls.add_argument("--limit", type=int, default=30, help="Show up to N example keys")
     
-
     pi = sub.add_parser("ingest-s3", help="Ingest images/PDFs from S3/MinIO")
     pi.add_argument("--bucket", required=True)
     pi.add_argument("--prefix", nargs="?", const="", default="", help="Optional prefix (empty = root)")
@@ -252,8 +255,9 @@ def build_parser() -> argparse.ArgumentParser:
     pi.add_argument("--max-files", type=int, default=None, help="Limit number of files processed")
     pi.add_argument("--dry-run", action="store_true", help="Preview only, don't write")
     pi.add_argument("--mode", choices=["overwrite", "append"], default="overwrite")
+    # New flag for automatic indexing
+    pi.add_argument("--create-index", action="store_true", help="Create a search index after ingestion completes")
 
-    # New command for creating an index
     p_idx = sub.add_parser("create-index", help="Create a performance index for a table (run after ingest)")
     p_idx.add_argument("--table", default="multimodal", help="Name of the table to index")
 
@@ -291,7 +295,8 @@ def main() -> None:
         cmd_ls_s3(args.bucket, args.prefix, args.limit, minio)
     elif args.cmd == "ingest-s3":
         cmd_ingest(args.bucket, args.prefix, args.table, minio, lcfg,
-                   args.include_ext, args.exclude_ext, args.max_files, args.dry_run, args.mode)
+                   args.include_ext, args.exclude_ext, args.max_files, 
+                   args.dry_run, args.mode, args.create_index)
     elif args.cmd == "create-index":
         cmd_create_index(args.table, lcfg)
     elif args.cmd == "search":
