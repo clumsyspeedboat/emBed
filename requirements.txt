@@ -13,6 +13,10 @@ rich>=13.7.1
 fastapi>=0.111
 uvicorn>=0.30
 
+torch>=2.2
+sentence-transformers>=3.0.0
+transformers>=4.44
+open_clip_torch>=2.24.0
 
 
 # Imaging support for dummy image generation
@@ -20,3 +24,9 @@ Pillow>=10.0.0
 
 # Type hints and development utilities (optional)
 typing-extensions>=4.7.0
+
+# Testing
+pytest>=8.0.0
+moto>=5.0.0
+boto3>=1.34.0
+botocore>=1.34.0

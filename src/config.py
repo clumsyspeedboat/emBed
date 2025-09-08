@@ -32,7 +32,6 @@ class LanceDBConfig:
     s3_endpoint: str = _strip_quotes(os.getenv("AWS_ENDPOINT", os.getenv("MINIO_ENDPOINT", "")))
 
     def _export_aws_env_from_minio(self) -> None:
-        # Fill AWS_* from MINIO_* if AWS_* not provided
         ak = os.getenv("AWS_ACCESS_KEY_ID") or os.getenv("MINIO_ACCESS_KEY")
         sk = os.getenv("AWS_SECRET_ACCESS_KEY") or os.getenv("MINIO_SECRET_KEY")
         rg = os.getenv("AWS_DEFAULT_REGION") or os.getenv("MINIO_REGION") or "us-east-1"
@@ -51,6 +50,6 @@ class LanceDBConfig:
             if self.s3_endpoint:
                 opts["endpoint"] = self.s3_endpoint
                 if self.s3_endpoint.startswith("http://") and self.allow_http_env not in ("0", "false", "False"):
-                    opts["allow_http"] = "true"  # must be string
+                    opts["allow_http"] = "true"
             return opts
         return {}

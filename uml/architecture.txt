@@ -1,0 +1,31 @@
+@startuml
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam defaultFontName "Segoe UI"
+
+package "Data Hub (UI/API GW)" {
+  [Search UI] as UI
+  [Upload API] as Upload
+}
+
+node "Query Orchestrator" as QO
+component "Dense Embed Service\n(BGE/CLIP/CLAP/ULIP-2)" as DES
+component "Sparse Index\n(TF-IDF/BM25)" as SP
+component "Hybrid Scorer\nα*dense + (1-α)*sparse" as HS
+database "LanceDB (ANN)\nSingle mixed-modality table" as LDB
+cloud "MinIO S3\n(blobs + presigned URLs)" as S3
+component "Re-ranker Cross-encoder" as RER
+
+UI --> QO : text query
+Upload --> QO : file query
+QO --> DES : embed/query vec
+QO --> SP : lexical scores
+DES --> HS
+SP --> HS
+HS --> LDB : ANN topK
+LDB --> RER : topK
+RER --> QO
+LDB --> QO : results + ids
+QO --> S3 : presign paths
+QO --> UI : mixed results\n(pdf/image/lidar/audio/video/csv)
+@enduml

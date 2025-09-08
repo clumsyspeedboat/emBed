@@ -5,16 +5,18 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import time
 from typing import Any, Dict, Optional, Iterable
 
 import pandas as pd
 
-from .config import MinioConfig, LanceDBConfig
-from .storage import MinioClient
-from .lancedb_manager import LanceDBManager
-from .search import MultiModalSearcher
-from .ingest import ingest_s3_objects, DEFAULT_EXTS
-from .cli_utils import echo, heading, kv_table, simple_table, panel, mask
+# Use consistent absolute imports from the 'src' package
+from src.config import MinioConfig, LanceDBConfig
+from src.storage import MinIOClient
+from src.lancedb_manager import LanceDBManager
+from src.search import MultiModalSearcher
+from src.ingest import ingest_s3_objects, DEFAULT_EXTS
+from src.cli_utils import echo, heading, kv_table, simple_table, panel, mask
 
 
 def _is_remote(uri: str) -> bool:
@@ -56,31 +58,57 @@ Tips:
 - You can keep LanceDB local (data/lancedb) and still ingest from S3.""", title="Notes")
 
 
-def cmd_health(minio: MinioConfig, lcfg: LanceDBConfig) -> None:
-    heading("Health Check")
-    s3 = MinioClient(minio)
-    rows = []
-    for bucket in [b.strip() for b in minio.buckets.split(",") if b.strip()]:
-        try:
-            keys = s3.list_objects(bucket, "")
-            rows.append([f"s3://{bucket}/", "READ list", f"OK ({len(keys)} objects listed)"])
-        except Exception as e:
-            rows.append([f"s3://{bucket}/", "READ list", f"FAIL ({e})"])
-    if _is_remote(lcfg.uri) and lcfg.uri.startswith("s3://"):
-        try:
-            _, rest = lcfg.uri.split("s3://", 1)
-            bucket, *parts = rest.split("/", 1)
-            prefix = parts[0] if parts else ""
-            test_key = (prefix.rstrip("/") + "/_health_write_test.txt").lstrip("/")
-            s3.upload_file(file_path=__file__, bucket=bucket, key=test_key)
-            rows.append([lcfg.uri, "WRITE put", "OK"])
-            s3._client.delete_object(Bucket=bucket, Key=test_key)
-            rows.append([lcfg.uri, "WRITE delete", "OK"])
-        except Exception as e:
-            rows.append([lcfg.uri, "WRITE put/delete", f"FAIL ({e})"])
+def cmd_health(minio_cfg, lancedb_cfg):
+    """Connectivity checks for S3 list and LanceDB write/delete."""
+    from rich.console import Console
+    from rich.table import Table
+    # Corrected to use absolute import
+    from src.storage import MinIOClient
+    import uuid
+    import time
+
+    console = Console()
+    table = Table(title="Health Check")
+    table.add_column("Target")
+    table.add_column("Operation")
+    table.add_column("Result")
+
+    s3 = MinIOClient()  # pulls endpoint/keys/region from env
+    # pick first bucket from config (env MINIO_BUCKETS/AWS_BUCKETS)
+    try:
+        # Handles comma-separated list
+        bucket = (minio_cfg.buckets or "").split(',')[0]
+    except Exception:
+        bucket = None
+
+    # S3 READ (list)
+    if not bucket:
+        table.add_row("(no bucket configured)", "READ list", "FAIL (no bucket in MINIO_BUCKETS)")
     else:
-        rows.append([lcfg.uri, "Local path", "OK"])
-    simple_table("Connectivity", ["Target", "Operation", "Result"], rows)
+        try:
+            # limit to something reasonable so we don't fetch millions
+            _ = s3.list_objects(bucket=bucket, prefix="", limit=1000)
+            table.add_row(f"s3://{bucket}/", "READ list", f"OK ({len(_)} objects listed)")
+        except Exception as e:
+            table.add_row(f"s3://{bucket}/", "READ list", f"FAIL ({e})")
+
+    # LanceDB WRITE/DELETE smoke test
+    try:
+        # Corrected to use absolute import
+        from src.lancedb_manager import LanceDBManager
+        mgr = LanceDBManager(lancedb_cfg)
+        uri = lancedb_cfg.uri
+        assert uri.startswith("s3://"), "LanceDB URI must be s3://..."
+        lance_bucket, lance_prefix = uri[5:].split("/", 1)
+        key = f"{lance_prefix.rstrip('/')}/_healthcheck/{uuid.uuid4().hex}.ping"
+        s3._client.put_object(Bucket=lance_bucket, Key=key, Body=b"ok")
+        table.add_row(f"s3://{lance_bucket}/{lance_prefix}", "WRITE put", "OK")
+        s3._client.delete_object(Bucket=lance_bucket, Key=key)
+        table.add_row(f"s3://{lance_bucket}/{lance_prefix}", "WRITE delete", "OK")
+    except Exception as e:
+        table.add_row(f"s3://{lancedb_cfg.uri[5:]}", "WRITE put/delete", f"FAIL ({e})")
+
+    console.print(table)
 
 
 def _summarize_keys(keys: Iterable[str], show=20):
@@ -117,10 +145,22 @@ def cmd_ingest(bucket: str, prefix: str, table: str, minio: MinioConfig, lcfg: L
                include_ext: Optional[list[str]], exclude_ext: Optional[list[str]],
                max_files: Optional[int], dry_run: bool, mode: str) -> None:
     manager = LanceDBManager(lcfg)
-    s3 = MinioClient(minio)
+    s3 = MinIOClient(minio)
     ingest_s3_objects(manager, s3, bucket, prefix or "", table,
                       include_ext=include_ext, exclude_ext=exclude_ext,
                       max_files=max_files, dry_run=dry_run, mode=mode)
+
+
+def cmd_create_index(table: str, lcfg: LanceDBConfig) -> None:
+    """Creates a vector index on the specified table."""
+    t0 = time.perf_counter()
+    manager = LanceDBManager(lcfg)
+    try:
+        manager.create_index(table)
+        duration = time.perf_counter() - t0
+        echo(f"[green]Successfully created index for table '{table}' in {duration:.2f}s.[/green]")
+    except Exception as e:
+        echo(f"[red]Error creating index: {e}[/red]")
 
 
 def _snippet(row: Dict[str, Any], max_chars: int = 120) -> str:
@@ -213,6 +253,10 @@ def build_parser() -> argparse.ArgumentParser:
     pi.add_argument("--dry-run", action="store_true", help="Preview only, don't write")
     pi.add_argument("--mode", choices=["overwrite", "append"], default="overwrite")
 
+    # New command for creating an index
+    p_idx = sub.add_parser("create-index", help="Create a performance index for a table (run after ingest)")
+    p_idx.add_argument("--table", default="multimodal", help="Name of the table to index")
+
     ps = sub.add_parser("search", help="Vector search")
     ps.add_argument("--table", default="multimodal")
     ps.add_argument("--modality", choices=["text", "image", "lidar"], default="text")
@@ -248,6 +292,8 @@ def main() -> None:
     elif args.cmd == "ingest-s3":
         cmd_ingest(args.bucket, args.prefix, args.table, minio, lcfg,
                    args.include_ext, args.exclude_ext, args.max_files, args.dry_run, args.mode)
+    elif args.cmd == "create-index":
+        cmd_create_index(args.table, lcfg)
     elif args.cmd == "search":
         cmd_search(args.table, args.modality, args.query, args.topk, args.where, lcfg)
     elif args.cmd == "peek":
@@ -262,3 +308,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

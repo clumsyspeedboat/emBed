@@ -1,4 +1,5 @@
 .env
+build_logs.jsonl
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
