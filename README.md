@@ -82,7 +82,7 @@ python -m src.main stats --table demo
 
 ---
 
-## Files (one-liners)
+## Files
 
 * `src/config.py` — loads `.env`, bridges MINIO↔AWS vars, prepares LanceDB options.
 * `src/storage.py` — thin MinIO/S3 helper (list/get/upload) via `boto3`.
