@@ -329,7 +329,9 @@ def ingest_s3_objects(
             print(f"  - {k}")
         return len(filtered)
     
-    all_rows: List[Dict] = []
+    total_ingested = 0
+    table_created = False
+    tbl = None
     
     # Process all keys in master batches to conserve memory
     num_batches = (len(filtered) + write_chunk - 1) // write_chunk
@@ -344,6 +346,8 @@ def ingest_s3_objects(
         pdf_keys = [k for k in master_batch_keys if os.path.splitext(k)[1].lower() in PDF_EXTS]
         lidar_keys = [k for k in master_batch_keys if os.path.splitext(k)[1].lower() in LIDAR_EXTS]
 
+        batch_rows: List[Dict] = []
+
         # ---- IMAGES (parallel dl + batched embed) ----
         if img_keys:
             img_processed_count = 0
@@ -356,7 +360,7 @@ def ingest_s3_objects(
                     # fallback per-item to avoid losing the whole chunk
                     vecs = np.vstack([np.asarray(img_embedder.embed(x)).reshape(1, -1) for x in imgs])
                 for k, v in zip(chunk_keys, vecs):
-                    all_rows.append({
+                    batch_rows.append({
                         "id": k, "modality": "image", "embedding": _to_list_vec(v),
                         "text": None, "image": None, "lidar": None, "path": f"s3://{bucket}/{k}",
                     })
@@ -379,7 +383,7 @@ def ingest_s3_objects(
                 except Exception:
                     vecs = np.vstack([np.asarray(text_embedder.embed(t)).reshape(1, -1) for t in texts])
                 for (k, text), v in zip(chunk, vecs):
-                    all_rows.append({
+                    batch_rows.append({
                         "id": k, "modality": "pdf", "embedding": _to_list_vec(v),
                         "text": text, "image": None, "lidar": None, "path": f"s3://{bucket}/{k}",
                     })
@@ -408,7 +412,7 @@ def ingest_s3_objects(
                 for k, pts in zip(valid, pts_list):
                     try:
                         v = lidar_embedder.embed(pts)
-                        all_rows.append({
+                        batch_rows.append({
                             "id": k, "modality": "lidar", "embedding": _to_list_vec(v),
                             "text": None, "image": None, "lidar": None, "path": f"s3://{bucket}/{k}",
                         })
@@ -417,43 +421,48 @@ def ingest_s3_objects(
                         continue  # Skip failed embeddings
             print(f"  LiDAR processed: {lidar_processed_count}/{len(lidar_keys)} files in this master batch.")
         
-        print(f"  Master batch {i+1} complete. Total items so far: {len(all_rows)}/{total_to_process}")
+        if not batch_rows:
+            print("  No rows to write for this batch.")
+            continue
 
+        print("  Deduplicating batch data...")
+        df = DataFrame(batch_rows)
+        if "id" in df.columns:
+            df = df.drop_duplicates(subset=["id"], keep="first")
+        rows = df.to_dict("records")
 
-    if not all_rows:
-        print("No processable objects found after filtering.")
-        return 0
-
-    print("\nDeduplicating and preparing data for database...")
-    df = DataFrame(all_rows)
-    if "id" in df.columns:
-        df = df.drop_duplicates(subset=["id"], keep="first")
-    rows = df.to_dict("records")
-
-    print(f"\nWriting {len(rows)} rows to LanceDB...")
-    # Write to LanceDB in chunks (fewer transactions)
-    if mode == "append":
-        try:
+        print(f"  Writing {len(rows)} rows from batch {i+1} to LanceDB...")
+        if i == 0 and mode == "overwrite":
+            manager.create_table(table_name, rows, mode="overwrite")
+            table_created = True
             tbl = manager.get_table(table_name)
+        else:
+            if not table_created:
+                try:
+                    tbl = manager.get_table(table_name)
+                except Exception:
+                    manager.create_table(table_name, rows, mode="overwrite")
+                    table_created = True
+                    tbl = manager.get_table(table_name)
+                    total_ingested += len(rows)
+                    print(f"  Master batch {i+1} complete. Total items so far: {total_ingested}/{total_to_process}")
+                    continue
+            # Delete duplicates for this batch
             ids = [r["id"] for r in rows]
             CHUNK_DEL = 500
-            for i in range(0, len(ids), CHUNK_DEL):
-                chunk = ids[i:i + CHUNK_DEL]
-                escaped = [("'" + x.replace("'", "''") + "'") for x in chunk]
+            for j in range(0, len(ids), CHUNK_DEL):
+                chunk_ids = ids[j:j + CHUNK_DEL]
+                escaped = [("'" + x.replace("'", "''") + "'") for x in chunk_ids]
                 tbl.delete(f"id IN ({','.join(escaped)})")
-            for i in range(0, len(rows), write_chunk):
-                tbl.add(rows[i:i + write_chunk])
-        except Exception:
-            manager.create_table(table_name, rows[:write_chunk], mode="overwrite")
-            tbl = manager.get_table(table_name)
-            for i in range(write_chunk, len(rows), write_chunk):
-                tbl.add(rows[i:i + write_chunk])
-    else:
-        # overwrite: 1st chunk creates, rest append
-        manager.create_table(table_name, rows[:write_chunk], mode="overwrite")
-        tbl = manager.get_table(table_name)
-        for i in range(write_chunk, len(rows), write_chunk):
-            tbl.add(rows[i:i + write_chunk])
+            # Add the rows
+            tbl.add(rows)
+
+        total_ingested += len(rows)
+        print(f"  Master batch {i+1} complete. Total items so far: {total_ingested}/{total_to_process}")
+
+    if total_ingested == 0:
+        print("No processable objects found after filtering.")
+        return 0
             
     duration_s = round(time.perf_counter() - t0, 3)
     finished_at = dt.datetime.now(dt.timezone.utc)
@@ -463,7 +472,7 @@ def ingest_s3_objects(
         "table": table_name,
         "bucket": bucket,
         "prefix": prefix,
-        "rows": len(rows),
+        "rows": total_ingested,
         "mode": mode,
         "include_ext": sorted(list(include_ext)) if include_ext else None,
         "exclude_ext": sorted(list(exclude_ext)) if exclude_ext else None,
@@ -473,7 +482,7 @@ def ingest_s3_objects(
         "host": socket.gethostname(),
     }
 
-    print(f"\n[BUILD COMPLETE] table='{table_name}' rows={len(rows)} mode={mode} total_duration={duration_s}s")
+    print(f"\n[BUILD COMPLETE] table='{table_name}' rows={total_ingested} mode={mode} total_duration={duration_s}s")
 
     try:
         with open("build_logs.jsonl", "a", encoding="utf-8") as f:
@@ -492,5 +501,5 @@ def ingest_s3_objects(
             meta_tbl.add([log_rec])
     except Exception: pass
 
-    print(f"\nSuccessfully ingested {len(rows)} objects into table '{table_name}' from s3://{bucket}/{prefix}")
-    return len(rows)
+    print(f"\nSuccessfully ingested {total_ingested} objects into table '{table_name}' from s3://{bucket}/{prefix}")
+    return total_ingested
