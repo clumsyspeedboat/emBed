@@ -6,9 +6,9 @@ from fastapi.responses import HTMLResponse
 from src.config import LanceDBConfig, MinioConfig
 from src.lancedb_manager import LanceDBManager
 from src.search import MultiModalSearcher
-from src.storage import MinioClient
+from src.storage import MinIOClient
 
-TABLE_NAME = os.getenv("WEBAPP_TABLE", "nuscenes")
+TABLE_NAME = os.getenv("WEBAPP_TABLE", "test")
 SHOW_IMAGES = os.getenv("WEBAPP_SHOW_IMAGES", "1") not in ("0", "false", "False")
 
 app = FastAPI(title="LanceDB Search")
@@ -168,7 +168,7 @@ def index(q: str = "", modality: str = "text", filter: str = "all", topk: int = 
         df = searcher.search(q, modality, top_k=int(topk), where=where)
 
     minio = MinioConfig()
-    s3 = MinioClient(minio.endpoint, minio.access_key, minio.secret_key, minio.region) if SHOW_IMAGES else None
+    s3 = MinIOClient(minio.endpoint, minio.access_key, minio.secret_key, minio.region) if SHOW_IMAGES else None
 
     rows = []
     for _, r in df.iterrows():
