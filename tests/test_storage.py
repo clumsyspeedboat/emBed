@@ -1,51 +1,85 @@
+import types
+import os
+import builtins
 import pytest
-from moto import mock_aws
-import boto3
-from src.storage import MinioClient
 
-@pytest.fixture
-def aws_credentials():
-    """Mocked AWS Credentials for moto."""
-    import os
-    os.environ["AWS_ACCESS_KEY_ID"] = "testing"
-    os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"
-    os.environ["AWS_SECURITY_TOKEN"] = "testing"
-    os.environ["AWS_SESSION_TOKEN"] = "testing"
-    os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
+from unittest.mock import MagicMock
+from src.storage import MinIOClient
 
-@pytest.fixture
-def s3_client(aws_credentials):
-    with mock_aws():
-        yield boto3.client("s3", region_name="us-east-1")
+class _FakePaginator:
+    def __init__(self, pages):
+        self._pages = pages
+    def paginate(self, **kwargs):
+        return self._pages
 
-def test_minio_client_ensure_bucket(s3_client):
-    """Tests that a bucket is created if it doesn't exist."""
-    minio_client = MinioClient(endpoint="https://s3.amazonaws.com", access_key="testing", secret_key="testing")
-    
-    # Check that the bucket does not exist
-    with pytest.raises(Exception):
-        s3_client.head_bucket(Bucket="test-bucket")
-        
-    # Create the bucket
-    minio_client.ensure_bucket("test-bucket")
-    
-    # Check that the bucket now exists
-    response = s3_client.head_bucket(Bucket="test-bucket")
-    assert response["ResponseMetadata"]["HTTPStatusCode"] == 200
+class _FakeS3:
+    def __init__(self, pages):
+        self.pages = pages
+        self.uploads = []
+        self.deletes = []
+    def get_paginator(self, name):
+        assert name == "list_objects_v2"
+        return _FakePaginator(self.pages)
+    def upload_file(self, src, bucket, key):
+        self.uploads.append((src, bucket, key))
+    def delete_objects(self, Bucket, Delete):
+        self.deletes.append((Bucket, Delete))
+    def head_bucket(self, Bucket):
+        pass
+    def create_bucket(self, Bucket):
+        pass
+    def get_object(self, Bucket, Key):
+        return {"Body": types.SimpleNamespace(read=lambda: b"data")}
+    def download_file(self, Bucket, Key, Filename):
+        with open(Filename, "wb") as f:
+            f.write(b"ok")
+    def generate_presigned_url(self, *a, **k):
+        return "https://example"
 
-def test_minio_client_list_objects(s3_client):
-    """Tests listing objects in a bucket."""
-    minio_client = MinioClient(endpoint="https://s3.amazonaws.com", access_key="testing", secret_key="testing")
-    bucket_name = "list-test-bucket"
-    s3_client.create_bucket(Bucket=bucket_name)
-    s3_client.put_object(Bucket=bucket_name, Key="file1.txt", Body="hello")
-    s3_client.put_object(Bucket=bucket_name, Key="folder/file2.txt", Body="world")
-    
-    keys = minio_client.list_objects(bucket_name)
-    assert len(keys) == 2
-    assert "file1.txt" in keys
-    assert "folder/file2.txt" in keys
-    
-    keys_with_prefix = minio_client.list_objects(bucket_name, prefix="folder/")
-    assert len(keys_with_prefix) == 1
-    assert "folder/file2.txt" in keys_with_prefix
+def test_iter_and_list_objects(monkeypatch, tmp_path):
+    pages = [
+        {"Contents": [{"Key": "a/x"}, {"Key": "a/y"}]},
+        {"Contents": [{"Key": "a/z"}]},
+    ]
+    fake = _FakeS3(pages)
+    monkeypatch.setattr("boto3.client", lambda *a, **k: fake)
+
+    s3 = MinIOClient()
+    keys = list(s3.iter_objects("bucket", "a/"))
+    assert keys == ["a/x", "a/y", "a/z"]
+
+    keys2 = s3.list_objects("bucket", "a/", limit=2)
+    assert keys2 == ["a/x", "a/y"]
+
+def test_delete_prefix_chunks(monkeypatch):
+    pages = [{"Contents": [{"Key": f"k/{i}"} for i in range(2505)]}]
+    fake = _FakeS3(pages)
+    monkeypatch.setattr("boto3.client", lambda *a, **k: fake)
+    s3 = MinIOClient()
+    deleted = s3.delete_prefix("b", "k/")
+    # 2505 keys -> 3 calls: 1000 + 1000 + 505
+    assert deleted == 2505
+    assert len(fake.deletes) == 3
+
+def test_upload_dir(monkeypatch, tmp_path):
+    pages = [{"Contents": []}]
+    fake = _FakeS3(pages)
+    monkeypatch.setattr("boto3.client", lambda *a, **k: fake)
+    d = tmp_path / "dir"
+    (d / "x/y").mkdir(parents=True)
+    (d / "x/y/f.txt").write_text("hi")
+    (d / "g.bin").write_bytes(b"ok")
+    s3 = MinIOClient()
+    cnt = s3.upload_dir(str(d), "buck", "pref")
+    assert cnt == 2
+    keys = sorted([k for _, _, k in fake.uploads])
+    assert keys == ["pref/g.bin", "pref/x/y/f.txt"]
+
+
+@pytest.fixture(autouse=True)
+def _minio_env(monkeypatch):
+    monkeypatch.setenv("MINIO_ENDPOINT", "http://localhost:9000")
+    monkeypatch.setenv("MINIO_ALLOW_HTTP", "true")
+    monkeypatch.setenv("MINIO_REGION", "us-east-1")
+    # optional but common in tests
+    monkeypatch.setenv("MINIO_VERIFY", "false")

@@ -1,14 +1,18 @@
 from __future__ import annotations
-import os
-import math
-import numpy as np
-from typing import List, Iterable, Optional
+
 import io
+import os
+from typing import Iterable, Optional, List
+
+import numpy as np
 import torch
 from PIL import Image
+
 from src.exceptions import EmbeddingError
 
-# --- Helpers -----------------------------------------------------------------
+
+# ---------- Helpers ----------
+
 def _pick_device() -> str:
     dev = os.getenv("DEVICE", "auto").lower()
     if dev == "cpu":
@@ -19,20 +23,24 @@ def _pick_device() -> str:
         return "cuda" if torch.cuda.is_available() else "cpu"
     return "cpu"
 
+
 def _l2_normalize(x: np.ndarray) -> np.ndarray:
     n = np.linalg.norm(x, axis=-1, keepdims=True)
     n = np.maximum(n, 1e-12)
     return x / n
 
-# --- Embedding Model Factory -------------------------------------------------
+
+# ---------- Text Embedder ----------
+
 class TextEmbedder:
     """
-    Text encoder. If TEXT_MODEL starts with 'clip:', use open_clip text encoder
-    (so it matches image space & dim). Otherwise use sentence-transformers.
-    Output is L2-normalized float32 numpy array.
+    Text encoder with unified .embed(texts) API (returns (B, D) float32).
+
+    If TEXT_MODEL starts with 'clip:', use open_clip text encoder
+    so vectors are in the same space/dim as image embeddings.
+    Otherwise, use sentence-transformers.
     """
     def __init__(self, model_name: Optional[str] = None, device: Optional[str] = None):
-        import os, numpy as np, torch
         self.device = device or _pick_device()
         self.model_name = model_name or os.getenv("TEXT_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
@@ -57,7 +65,6 @@ class TextEmbedder:
             self.dim = self.st_model.get_sentence_embedding_dimension()
 
     def embed(self, texts: Iterable[str]) -> np.ndarray:
-        import numpy as np, torch
         if isinstance(texts, str):
             texts = [texts]
         try:
@@ -68,7 +75,6 @@ class TextEmbedder:
                 feats = feats.cpu().numpy().astype("float32")
                 return _l2_normalize(feats)
 
-            # sentence-transformers path
             embs = self.st_model.encode(
                 list(texts),
                 convert_to_numpy=True,
@@ -79,10 +85,13 @@ class TextEmbedder:
         except Exception as e:
             raise EmbeddingError(f"Failed to embed text: {e}") from e
 
+
+# ---------- Image Embedder ----------
+
 class ImageEmbedder:
     """
-    open_clip encoder (defaults: ViT-B/32 openai). Input = raw bytes or PIL.Image.
-    Returns L2-normalized float32 numpy arrays.
+    CLIP image encoder (defaults to ViT-B/32#openai).
+    Unified .embed(images) API; input = bytes or PIL.Image; output = (B, D) float32, L2-normalized.
     """
     def __init__(self, model_spec: Optional[str] = None, device: Optional[str] = None):
         import open_clip
@@ -104,6 +113,7 @@ class ImageEmbedder:
         return self.preprocess(img).unsqueeze(0).to(self.device)
 
     def embed(self, images: Iterable[bytes | Image.Image]) -> np.ndarray:
+        # Accept single item transparently
         if isinstance(images, (bytes, Image.Image)):
             images = [images]
         try:
@@ -125,8 +135,14 @@ class ImageEmbedder:
         except Exception as e:
             raise EmbeddingError(f"Failed to embed image: {e}") from e
 
+
+# ---------- LiDAR → BEV → Image Embedder ----------
+
 class LidarBEVEmbedder:
-    """Projects XYZ(+intensity) to a fixed-size BEV image and uses the CLIP image encoder."""
+    """
+    Projects XYZ(+intensity) to a fixed-size BEV image and uses the image embedder.
+    Unified .embed(clouds) API; accepts single np.ndarray or iterable of arrays; returns (B, D).
+    """
     def __init__(self, image_embedder: ImageEmbedder, img_size: int = 224, meters: float = 50.0, px_per_m: float = 2.0):
         self.ie = image_embedder
         self.img_size = img_size
@@ -134,42 +150,46 @@ class LidarBEVEmbedder:
         self.scale = px_per_m
 
     def _pointcloud_to_bev(self, pts: np.ndarray) -> Image.Image:
-        # pts: (N, 3/4/5) -> use x,y,z[,intensity]
-        import numpy as np
-        from PIL import Image
-        if pts.shape[1] < 3:
-            raise ValueError("LiDAR points need at least 3 dims (x,y,z)")
+        if pts.ndim != 2 or pts.shape[1] < 3:
+            raise ValueError("LiDAR points need shape (N, >=3) for (x,y,z[,intensity])")
         x, y = pts[:, 0], pts[:, 1]
         w = h = int(self.meters * 2 * self.scale)  # cover [-meters, +meters]
+
         # map meters→pixels (origin center)
         u = np.clip(((x + self.meters) * self.scale).astype(np.int32), 0, w - 1)
         v = np.clip(((y + self.meters) * self.scale).astype(np.int32), 0, h - 1)
         canvas = np.zeros((h, w), dtype=np.uint8)
-        # channel: intensity if present else height proxy
+
+        # intensity channel if present; else z as height proxy
         if pts.shape[1] >= 4:
             val = np.clip((pts[:, 3] * 255.0), 0, 255).astype(np.uint8)
         else:
             z = pts[:, 2]
             z_norm = (z - z.min()) / max(1e-6, (z.max() - z.min()))
             val = (z_norm * 255.0).astype(np.uint8)
+
+        # draw: keep the max per pixel
         canvas[v, u] = np.maximum(canvas[v, u], val)
-        img = Image.fromarray(canvas, mode="L").convert("RGB").resize((self.img_size, self.img_size), Image.BILINEAR)
+        img = Image.fromarray(canvas).convert("RGB").resize((self.img_size, self.img_size), Image.BILINEAR)
+
         return img
 
-    def embed(self, pts: np.ndarray) -> np.ndarray:
-        """pts can be np.ndarray or list of arrays; returns (N, D)."""
-        import numpy as np
+    def embed(self, clouds: Iterable[np.ndarray] | np.ndarray) -> np.ndarray:
+        """
+        Accepts a single cloud (np.ndarray) or an iterable of clouds.
+        Returns a (B, D) float32 ndarray.
+        """
         try:
-            if isinstance(pts, np.ndarray) and pts.ndim == 2:
-                img = self._pointcloud_to_bev(pts)
-                return self.ie.embed(img)
-            batch = []
-            for p in pts:
-                img = self._pointcloud_to_bev(p)
-                batch.append(self.ie.embed(img))
-            return np.vstack(batch)
+            if isinstance(clouds, np.ndarray):
+                clouds = [clouds]
+            images: List[Image.Image] = [self._pointcloud_to_bev(pts) for pts in clouds]
+            feats = self.ie.embed(images)  # (B, D), already normalized
+            return feats
         except Exception as e:
             raise EmbeddingError(f"Failed to embed LiDAR data: {e}") from e
+
+
+# ---------- Factory ----------
 
 def get_embedding_model(model_type: str, model_name: Optional[str] = None):
     if model_type == "text":

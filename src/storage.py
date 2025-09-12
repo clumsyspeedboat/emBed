@@ -1,96 +1,43 @@
+# src/storage.py
 """Utilities for working with MinIO/S3 object storage."""
+from __future__ import annotations
 import os
 import boto3
-from botocore.config import Config
 from botocore.exceptions import ClientError
-# Corrected absolute import
+from typing import Iterable
 from src.config import MinioConfig
-
-# (The rest of the file is unchanged)
-def _env(*keys: str, default: str | None = None) -> str | None:
-    """Return the first non-empty environment value among keys."""
-    for k in keys:
-        v = os.environ.get(k)
-        if v is not None and v != "":
-            return v
-    return default
-
 
 class MinIOClient:
     def __init__(
         self,
+        config: MinioConfig | None = None,
+        *,
         endpoint: str | None = None,
         access_key: str | None = None,
         secret_key: str | None = None,
-        region: str | None = None,
-        config: MinioConfig | None = None,
         session_token: str | None = None,
+        region: str | None = None,
+        verify: bool | None = None,
+        allow_http: bool | None = None,
+        force_path_style: bool | None = None,
+        virtual_hosted_style: bool | None = None,
     ):
-        """
-        Accepts explicit args, a MinioConfig, or falls back to environment variables.
-
-        Env keys checked:
-          - Endpoint:  AWS_ENDPOINT, S3_ENDPOINT, MINIO_ENDPOINT
-          - Access:    AWS_ACCESS_KEY_ID, MINIO_ACCESS_KEY
-          - Secret:    AWS_SECRET_ACCESS_KEY, MINIO_SECRET_KEY
-          - Region:    AWS_DEFAULT_REGION, MINIO_REGION  (default: us-east-1)
-          - Token:     AWS_SESSION_TOKEN (optional)
-        """
-
-        # If a MinioConfig object is supplied in 'config', prefer it as base
-        if isinstance(config, MinioConfig):
-            endpoint = endpoint or config.endpoint
-            access_key = access_key or config.access_key
-            secret_key = secret_key or config.secret_key
-            region = region or (config.region or None)
-
-        # Also support passing a MinioConfig in the 'endpoint' slot (legacy call sites)
-        if isinstance(endpoint, MinioConfig):
-            cfg = endpoint
-            endpoint, access_key, secret_key, region = (
-                cfg.endpoint,
-                cfg.access_key,
-                cfg.secret_key,
-                (cfg.region or None),
-            )
-
-        # Prefer explicit args, else environment
-        self.endpoint = endpoint or _env("AWS_ENDPOINT", "S3_ENDPOINT", "MINIO_ENDPOINT")
-        self.access_key = access_key or _env("AWS_ACCESS_KEY_ID", "MINIO_ACCESS_KEY")
-        self.secret_key = secret_key or _env("AWS_SECRET_ACCESS_KEY", "MINIO_SECRET_KEY")
-        self.region = region or _env("AWS_DEFAULT_REGION", "MINIO_REGION", default="us-east-1")
-        self.session_token = session_token or _env("AWS_SESSION_TOKEN")
-
-        if not self.endpoint or not self.access_key or not self.secret_key:
-            raise ValueError(
-                "MinioClient requires endpoint, access_key, and secret_key "
-                "(set MINIO_* or AWS_* environment variables)."
-            )
-
-        # Normalize endpoint URL
-        if not (self.endpoint.startswith("http://") or self.endpoint.startswith("https://")):
-            self.endpoint = "https://" + self.endpoint
-
-        use_https = self.endpoint.startswith("https://")
-
-        cfg = Config(
-            max_pool_connections=256,
-            retries={"max_attempts": 8, "mode": "standard"},
-            connect_timeout=5,
-            read_timeout=60,
-            signature_version="s3v4",
+        """Preferred: pass a MinioConfig. Explicit kwargs override the config."""
+        base = config or MinioConfig()
+        eff = MinioConfig(
+            endpoint=endpoint or base.endpoint,
+            access_key=access_key or base.access_key,
+            secret_key=secret_key or base.secret_key,
+            session_token=session_token or base.session_token,
+            region=region or base.region,
+            buckets=base.buckets,
+            verify=base.verify if verify is None else verify,
+            allow_http=base.allow_http if allow_http is None else allow_http,
+            force_path_style=base.force_path_style if force_path_style is None else force_path_style,
+            virtual_hosted_style=base.virtual_hosted_style if virtual_hosted_style is None else virtual_hosted_style,
         )
-
-        self._client = boto3.client(
-            "s3",
-            endpoint_url=self.endpoint,
-            aws_access_key_id=self.access_key,
-            aws_secret_access_key=self.secret_key,
-            aws_session_token=self.session_token,
-            region_name=self.region,
-            use_ssl=use_https,
-            config=cfg,
-        )
+        kwargs = eff.to_boto_kwargs()
+        self._client = boto3.client("s3", **kwargs)
 
     # -------- convenience methods --------
 
@@ -108,13 +55,11 @@ class MinIOClient:
         self._client.download_file(bucket, key, file_path)
 
     def list_objects(self, bucket: str, prefix: str = "", limit: int | None = None) -> list[str]:
-        """List keys under bucket/prefix with full pagination, optional limit."""
         keys: list[str] = []
         paginator = self._client.get_paginator("list_objects_v2")
         kwargs = {"Bucket": bucket}
         if prefix:
             kwargs["Prefix"] = prefix
-
         total = 0
         for page in paginator.paginate(**kwargs):
             for obj in page.get("Contents", []):
@@ -123,6 +68,13 @@ class MinIOClient:
                 if limit is not None and total >= limit:
                     return keys
         return keys
+
+    def iter_objects(self, bucket: str, prefix: str = "") -> Iterable[str]:
+        """Yield keys under bucket/prefix."""
+        paginator = self._client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                yield obj["Key"]
 
     def get_object_bytes(self, bucket: str, key: str) -> bytes:
         resp = self._client.get_object(Bucket=bucket, Key=key)
@@ -134,3 +86,37 @@ class MinIOClient:
             Params={"Bucket": bucket, "Key": key},
             ExpiresIn=expires,
         )
+
+    def delete_prefix(self, bucket: str, prefix: str) -> int:
+        """Delete all objects under the given prefix. Returns count."""
+        count = 0
+        keys = [{"Key": k} for k in self.iter_objects(bucket, prefix)]
+        for i in range(0, len(keys), 1000):
+            chunk = keys[i:i + 1000]
+            if not chunk:
+                break
+            self._client.delete_objects(Bucket=bucket, Delete={"Objects": chunk})
+            count += len(chunk)
+        return count
+
+    def upload_dir(self, local_dir: str, bucket: str, prefix: str) -> int:
+        """Recursively upload a directory to S3, preserving relative paths."""
+        uploaded = 0
+        for root, _, files in os.walk(local_dir):
+            for fname in files:
+                src_path = os.path.join(root, fname)
+                rel_path = os.path.relpath(src_path, start=local_dir).replace("\\", "/")
+                key = f"{prefix}/{rel_path}" if prefix else rel_path
+                self._client.upload_file(src_path, bucket, key)
+                uploaded += 1
+        return uploaded
+
+    def delete_objects(self, bucket: str, keys: Iterable[str]) -> int:
+        """Delete a collection of objects in chunks of 1000."""
+        keys_list = list(keys)
+        count = 0
+        for i in range(0, len(keys_list), 1000):
+            chunk = keys_list[i:i + 1000]
+            self._client.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": k} for k in chunk]})
+            count += len(chunk)
+        return count

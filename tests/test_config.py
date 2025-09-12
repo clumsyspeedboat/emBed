@@ -2,38 +2,40 @@ import os
 import pytest
 from src.config import MinioConfig, LanceDBConfig
 
-def test_minio_config_defaults(monkeypatch):
-    """Tests that MinioConfig loads default values correctly when no env vars are set."""
-    # Temporarily remove environment variables that might interfere with the test
-    monkeypatch.delenv("MINIO_ENDPOINT", raising=False)
-    monkeypatch.delenv("MINIO_REGION", raising=False)
-    monkeypatch.delenv("MINIO_BUCKETS", raising=False)
+def test_minio_config_http_disallowed_by_default(monkeypatch):
+    monkeypatch.setenv("MINIO_ENDPOINT", "10.0.0.5:9000")
+    monkeypatch.delenv("MINIO_ALLOW_HTTP", raising=False)
+    kw = MinioConfig().to_boto_kwargs()
+    assert kw["endpoint_url"].startswith("https://")
 
-    config = MinioConfig()
-    assert config.endpoint == "http://localhost:9000"
-    assert config.region == "us-east-1"
-    assert config.buckets == "test-bucket"
+def test_minio_config_http_allowed(monkeypatch):
+    monkeypatch.setenv("MINIO_ENDPOINT", "10.0.0.5:9000")
+    monkeypatch.setenv("MINIO_ALLOW_HTTP", "true")
+    kw = MinioConfig().to_boto_kwargs()
+    assert kw["endpoint_url"].startswith("http://")
+    # verify is honored but irrelevant for http
+    assert "verify" in kw
 
-def test_minio_config_env_vars(monkeypatch):
-    """Tests that MinioConfig correctly loads variables from the environment."""
-    monkeypatch.setenv("MINIO_ENDPOINT", "http://test-minio:9000")
-    monkeypatch.setenv("MINIO_ACCESS_KEY", "test_access_key")
-    monkeypatch.setenv("MINIO_SECRET_KEY", "test_secret_key")
-    
-    config = MinioConfig()
-    assert config.endpoint == "http://test-minio:9000"
-    assert config.access_key == "test_access_key"
-    assert config.secret_key == "test_secret_key"
+def test_minio_config_https_self_signed(monkeypatch):
+    monkeypatch.setenv("MINIO_ENDPOINT", "https://10.0.0.5:9000")
+    monkeypatch.setenv("MINIO_VERIFY", "false")
+    kw = MinioConfig().to_boto_kwargs()
+    assert kw["endpoint_url"].startswith("https://")
+    assert kw["verify"] is False
 
-def test_lancedb_config_s3_storage_options(monkeypatch):
-    """Tests that LanceDB storage options are correctly generated for S3."""
-    monkeypatch.setenv("LANCEDB_URI", "s3://my-bucket/lancedb")
-    monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-central-1")
-    monkeypatch.setenv("AWS_ENDPOINT", "http://test-s3:9000")
-    
-    config = LanceDBConfig()
-    options = config.storage_options()
-    
-    assert config.uri == "s3://my-bucket/lancedb"
-    assert options["region"] == "eu-central-1"
-    assert options["endpoint"] == "http://test-s3:9000"
+def test_addressing_style_default_path(monkeypatch):
+    monkeypatch.setenv("MINIO_ENDPOINT", "https://10.0.0.5:9000")
+    m = MinioConfig()
+    kw = m.to_boto_kwargs()
+    # Botocore Config object is opaque; check repr for addressing_style
+    cfg = kw["config"]
+    # Botocore exposes s3 options as a dict attribute on the Config object
+    assert getattr(cfg, "s3", {}).get("addressing_style") == "path"
+
+def test_lancedb_storage_options_allow_http(monkeypatch):
+    monkeypatch.setenv("LANCEDB_URI", "s3://bucket/prefix")
+    monkeypatch.setenv("AWS_ENDPOINT", "http://10.0.0.5:9000")
+    monkeypatch.setenv("LANCEDB_ALLOW_HTTP", "1")
+    opts = LanceDBConfig().storage_options()
+    assert opts["endpoint"].startswith("http://")
+    assert opts.get("allow_http") == "true"
