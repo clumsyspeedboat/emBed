@@ -91,6 +91,10 @@ class DummyLidarEmbedder:
             rows.append(_hash_to_unit_vec(a32.tobytes(), self.dim))
         return np.vstack(rows)
 
+    # Provide batch-friendly API symmetry with real adapter
+    def embed_pointclouds(self, clouds: Iterable[np.ndarray]) -> np.ndarray:
+        return self.embed(clouds)
+
 
 # ---------- Real Embedders (lazy import) ----------
 _real_text: Optional[Any] = None
@@ -128,6 +132,12 @@ class _RealLidarAdapter:
         for c in clouds:
             outs.append(self._lidar.embed(np.asarray(c)))
         return np.vstack(outs)
+
+     # Conform to LidarEmbedder Protocol: accept iterable or single array
+    def embed(self, clouds: Iterable[np.ndarray] | np.ndarray) -> np.ndarray:
+        if isinstance(clouds, np.ndarray):
+            return self.embed_pointclouds([clouds])
+        return self.embed_pointclouds(clouds)
 
 
 def _load_real_lidar() -> _RealLidarAdapter:

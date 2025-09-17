@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import time
 from typing import Any, Optional
+import os
 
 import numpy as np
 import pandas as pd
@@ -100,11 +101,40 @@ class MultiModalSearcher:
         modality: str,
         top_k: int = 3,
         where: Optional[str] = None,
+        metric: Optional[str] = None,
     ) -> pd.DataFrame:
         t0 = time.perf_counter()
         vec = self._embed_query(query, modality)
 
         q = self.table.search(vec)
+
+        # Distance metric selection: 'l2' | 'cosine' | 'dot'
+        # Map synonyms and fallbacks; 'dot' == 'cosine' for L2-normalized embeddings
+        m = (metric or os.getenv("LANCEDB_METRIC", "l2")).strip().lower()
+        if m in ("euclidean", "l2", "l2_distance"):
+            m_norm = "l2"
+        elif m in ("cos", "cosine"):
+            m_norm = "cosine"
+        elif m in ("dot", "ip", "inner_product", "dot_product"):
+            m_norm = "cosine"  # normalized embeddings → dot ≡ cosine
+        else:
+            m_norm = "l2"
+        q = _call_query_method_preferring_class(q, "metric", m_norm)
+
+        # Improve recall when an IVF/PQ index is present
+        # Tunables via env with sensible defaults
+        try:
+            nprobes = int(os.getenv("LANCEDB_NPROBES", "32"))
+        except Exception:
+            nprobes = 32
+        try:
+            refine = int(os.getenv("LANCEDB_REFINE_FACTOR", "50"))
+        except Exception:
+            refine = 50
+        if nprobes and nprobes > 0:
+            q = _call_query_method_preferring_class(q, "nprobes", int(nprobes))
+        if refine and refine > 0:
+            q = _call_query_method_preferring_class(q, "refine_factor", int(refine))
 
         if where:
             # keep your test’s capture variables up to date

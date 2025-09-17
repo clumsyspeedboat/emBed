@@ -43,6 +43,9 @@ python -m src.main ingest-s3 --bucket YOUR_BUCKET --table demo
 ```bash
 # PDFs only
 python -m src.main search --table demo --modality text --query "invoice" --where "modality = 'pdf'"
+
+# Choose distance metric (l2 | cosine | dot)
+python -m src.main search --table demo --modality text --query "invoice" --metric cosine
 ```
 
 **6) Web UI (search bar)**
@@ -71,6 +74,90 @@ python -m src.main ingest-s3 --bucket YOUR_BUCKET --table demo \
 python -m src.main peek --table demo --n 5
 python -m src.main stats --table demo
 ```
+
+---
+
+## Index Creation (IVF-PQ)
+
+Build or rebuild a search index after ingestion to accelerate queries while keeping good recall. You can let the tool choose parameters automatically, or provide explicit values.
+
+Examples
+
+```bash
+# Adaptive (heuristic) index based on rows and embedding dim
+python -m src.main create-index --table multimodal
+
+# Explicit overrides (advanced)
+python -m src.main create-index --table multimodal \
+  --partitions 2048 \
+  --m 32 \
+  --metric l2 \
+  --num-bits 8 \
+  --opq \
+  --max-train-rows 500000
+```
+
+Heuristic and Env Overrides
+
+- Partitions (nlist): approx `4 * sqrt(N)` clamped to `[512, 8192]` by default. Override with:
+  - CLI: `--partitions`
+  - Env: `INDEX_NUM_PARTITIONS`, `INDEX_MIN_PARTITIONS`, `INDEX_MAX_PARTITIONS`
+- PQ sub-vectors `m`: largest divisor of dim from `{64,48,32,24,16,12,8,4,2,1}`. Override with:
+  - CLI: `--m`
+  - Env: `INDEX_M`
+- Index metric: default `l2`. Override with:
+  - CLI: `--metric {l2,cosine}`
+  - Env: `LANCEDB_INDEX_METRIC`
+- Training knobs (if supported by your lancedb version):
+  - CLI: `--num-bits`, `--opq`, `--max-train-rows`
+  - Env: `INDEX_NUM_BITS`, `INDEX_USE_OPQ`, `INDEX_MAX_TRAIN_ROWS`
+- Minimum rows to build an index: default `5000` (to avoid poor codebooks on tiny datasets). Override with:
+  - CLI: `--min-rows`
+  - Env: `INDEX_MIN_ROWS`
+
+Notes
+
+- You can re-run index creation safely after new data is ingested. The command replaces the previous index.
+- Query-time recall/latency is controlled by `LANCEDB_NPROBES` and `LANCEDB_REFINE_FACTOR` (see next section).
+
+---
+
+## Ingestion Performance
+
+For large datasets (e.g., millions of files), tune these env vars in `.env` to improve throughput:
+
+- INGEST_WORKERS: S3 download concurrency. Try 32–128 depending on your MinIO and network.
+- INGEST_EMBED_BATCH: Batch size for text/image/pdf embeddings. Increase with GPU/CPU memory (e.g., 128–512).
+- LIDAR_EMBED_BATCH: Explicit LiDAR batch size. If unset (0), it uses `INGEST_EMBED_BATCH // LIDAR_BATCH_DIVISOR`.
+- LIDAR_BATCH_DIVISOR: Lower value → larger default LiDAR batch (e.g., 4).
+- INGEST_WRITE_CHUNK: Rows per DB write chunk (e.g., 10000–50000) to reduce write overhead.
+- INGEST_PDF_MAX_PAGES: Fewer pages per PDF speeds ingestion.
+- INGEST_PROGRESS_EVERY: Print progress every N processed items (0 = per-batch prints).
+- MINIO_SUPPRESS_TLS_WARN: Set to 1 to suppress HTTPS warnings when `MINIO_VERIFY=false`.
+
+Example high-throughput settings:
+
+```env
+INGEST_WORKERS=64
+INGEST_EMBED_BATCH=256
+LIDAR_EMBED_BATCH=64
+INGEST_WRITE_CHUNK=20000
+INGEST_PROGRESS_EVERY=1000
+```
+
+---
+
+## Distance Metric & Recall Tuning
+
+- Metric selection:
+  - CLI: add `--metric {l2,cosine,dot}` (default from `LANCEDB_METRIC`, falls back to `l2`).
+  - Web UI: use the Metric dropdown (Cosine/Dot recommended). The results table shows Distance (L2) or Similarity (Cosine/Dot).
+  - Note: embeddings are L2-normalized, so `dot` is equivalent to `cosine` in practice.
+
+- ANN recall vs latency:
+  - `LANCEDB_NPROBES` (default 32): more probes → higher recall, slower.
+  - `LANCEDB_REFINE_FACTOR` (default 50): re-rank more candidates with exact distances.
+  - Set these env vars in `.env` to tune web UI and API behavior; CLI also honors them.
 
 ---
 

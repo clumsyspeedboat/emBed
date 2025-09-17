@@ -59,12 +59,24 @@ DEFAULT_EXTS = TEXT_EXTS | IMAGE_EXTS | PDF_EXTS | LIDAR_EXTS
 PDF_TEXT_CHAR_LIMIT = 50_000
 DEFAULT_PDF_MAX_PAGES = 8
 
-# parallelism / batching (tune per environment)
-DEFAULT_WORKERS = 16
-DEFAULT_EMBED_BATCH = 64
-DEFAULT_WRITE_CHUNK = 5000
-# LiDAR batches are heavier; we keep smaller sub-batches
-LIDAR_BATCH_DIVISOR = 8  # lidar_batch = max(1, embed_batch // LIDAR_BATCH_DIVISOR)
+# parallelism / batching (env-tunable)
+def _get_int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+DEFAULT_WORKERS = _get_int_env("INGEST_WORKERS", 16)
+DEFAULT_EMBED_BATCH = _get_int_env("INGEST_EMBED_BATCH", 64)
+DEFAULT_WRITE_CHUNK = _get_int_env("INGEST_WRITE_CHUNK", 5000)
+# LiDAR batches are heavier; keep smaller by default, but allow override
+LIDAR_BATCH_DIVISOR = max(1, _get_int_env("LIDAR_BATCH_DIVISOR", 8))  # lidar_batch = max(1, embed_batch // LIDAR_BATCH_DIVISOR)
+LIDAR_EMBED_BATCH = _get_int_env("LIDAR_EMBED_BATCH", 0)  # 0 means derive via divisor
+
+DEFAULT_PDF_MAX_PAGES = _get_int_env("INGEST_PDF_MAX_PAGES", 8)
+
+# progress throttling (print less often)
+INGEST_PROGRESS_EVERY = _get_int_env("INGEST_PROGRESS_EVERY", 0)  # 0 => use embed_batch/small_batch
 
 # -------- small utilities --------
 
@@ -310,13 +322,17 @@ class _UpsertWriter:
         if not rows:
             return 0
         tbl = self.mgr.get_table(table_name)
-        # delete existing ids in one or few statements
+        # prefer upsert if available (newer lancedb)
+        up = getattr(tbl, "upsert", None)
+        if callable(up):
+            up(rows)
+            return len(rows)
+        # fallback: delete existing ids then add rows
         ids = [r["id"] for r in rows]
         CHUNK = 1000
         for j in range(0, len(ids), CHUNK):
             chunk = self._escape_ids(ids[j:j + CHUNK])
             tbl.delete(f"id IN ({','.join(chunk)})")
-        # add rows
         tbl.add(rows)
         return len(rows)
 
@@ -342,6 +358,12 @@ def ingest_s3_objects(
     text_embedder=None,
     image_embedder=None,
     lidar_embedder=None,
+    # streaming options
+    stream_list: bool = False,
+    # optional per-run overrides
+    progress_every: Optional[int] = None,
+    lidar_embed_batch: Optional[int] = None,
+    lidar_batch_divisor: Optional[int] = None,
 ) -> int:
     """Scan s3://bucket/prefix and write rows into `table_name`.
     Returns number of rows processed (planned if dry_run=True)."""
@@ -354,15 +376,111 @@ def ingest_s3_objects(
     started_at = dt.datetime.now(dt.timezone.utc)
     t0 = time.perf_counter()
 
-    # 1) list keys once
+    # (optional) silence TLS warnings for self-signed/HTTP endpoints
+    try:
+        mv = str(os.getenv("MINIO_VERIFY", "")).strip().lower()
+        sup = str(os.getenv("MINIO_SUPPRESS_TLS_WARN", "")).strip().lower()
+        if sup in ("1", "true", "yes") or mv in ("0", "false", "no"):
+            import urllib3  # type: ignore
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    except Exception:
+        pass
+
+    # 1) list keys (optionally streaming)
     print("Listing objects...")
+    incl = _normalize_exts(include_ext) or DEFAULT_EXTS
+    excl = _normalize_exts(exclude_ext) or set()
+
+    def _filtered_keys_stream():
+        count = 0
+        for key in s3.iter_objects(bucket=bucket, prefix=prefix or ""):
+            ext = os.path.splitext(key)[1].lower()
+            if ext in excl:
+                continue
+            if ext in incl:
+                yield key
+                count += 1
+                if max_files and count >= max_files:
+                    return
+
+    # compute local effective knobs
+    eff_progress_every = INGEST_PROGRESS_EVERY if progress_every is None else int(progress_every)
+    eff_lidar_embed_batch = None
+    if lidar_embed_batch is not None and int(lidar_embed_batch) > 0:
+        eff_lidar_embed_batch = int(lidar_embed_batch)
+    eff_lidar_divisor = int(lidar_batch_divisor) if lidar_batch_divisor else LIDAR_BATCH_DIVISOR
+
+    if stream_list:
+        filtered_iter = _filtered_keys_stream()
+        if dry_run:
+            # stream count+sample
+            n = 0
+            samp: List[str] = []
+            for k in filtered_iter:
+                n += 1
+                if len(samp) < 10:
+                    samp.append(k)
+            print(f"[DRY-RUN] Would ingest {n} objects into '{table_name}' from s3://{bucket}/{prefix}")
+            for k in samp:
+                print("  -", k)
+            return n
+        # proceed streaming
+        writer = _UpsertWriter(manager)
+        total_written = 0
+        bidx = 0
+        buf: List[str] = []
+        for k in filtered_iter:
+            buf.append(k)
+            if len(buf) >= write_chunk:
+                bidx += 1
+                master_keys = buf
+                buf = []
+                print(f"\n--- Batch {bidx}/? ({len(master_keys)} files) ---")
+                # 2) download per-batch
+                blobs = _download_many(s3, bucket, master_keys, workers)
+                # process the batch
+                # (reuse existing per-modality logic)
+                # inline the body via helper
+                total_written += _process_one_batch(
+                    bidx, master_keys, blobs, manager, writer, bucket, table_name,
+                    embed_batch, write_chunk, pdf_max_pages, text_embedder, image_embedder, lidar_embedder,
+                    eff_progress_every, eff_lidar_embed_batch, eff_lidar_divisor
+                )
+        if buf:
+            bidx += 1
+            master_keys = buf
+            print(f"\n--- Batch {bidx}/? ({len(master_keys)} files) ---")
+            blobs = _download_many(s3, bucket, master_keys, workers)
+            total_written += _process_one_batch(
+                bidx, master_keys, blobs, manager, writer, bucket, table_name,
+                embed_batch, write_chunk, pdf_max_pages, text_embedder, image_embedder, lidar_embedder,
+                eff_progress_every, eff_lidar_embed_batch, eff_lidar_divisor
+            )
+        # log and return
+        duration_s = round(time.perf_counter() - t0, 3)
+        print(f"\n[BUILD COMPLETE] table='{table_name}' rows={total_written} mode={mode} duration={duration_s}s")
+        try:
+            with open("build_logs.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "run_id": f"{started_at.strftime('%Y%m%dT%H%M%S')}-{table_name}",
+                    "table": table_name, "bucket": bucket, "prefix": prefix,
+                    "rows": total_written, "mode": mode,
+                    "include_ext": sorted(list(incl)) if incl else None,
+                    "exclude_ext": sorted(list(excl)) if excl else None,
+                    "started_at": started_at.isoformat().replace("+00:00", "Z"),
+                    "finished_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "duration_s": duration_s,
+                    "host": socket.gethostname(),
+                }) + "\n")
+        except Exception:
+            pass
+        return total_written
+
+    # non-streaming path (original behavior)
     keys = s3.list_objects(bucket=bucket, prefix=prefix or "")
     if not keys:
         print(f"No objects found under s3://{bucket}/{prefix}")
         return 0
-
-    incl = _normalize_exts(include_ext) or DEFAULT_EXTS
-    excl = _normalize_exts(exclude_ext) or set()
 
     filtered: List[str] = []
     for key in keys:
@@ -434,7 +552,9 @@ def ingest_s3_objects(
                     })
                     seen_ids.add(k)
                 processed += len(chunk_keys)
-                print(f"  images: {processed}/{len(img_keys)}")
+                prog_every = INGEST_PROGRESS_EVERY or embed_batch
+                if processed % max(1, prog_every) == 0 or processed >= len(img_keys):
+                    print(f"  images: {processed}/{len(img_keys)}")
 
         # 4) text files (batched)
         if text_keys:
@@ -459,7 +579,9 @@ def ingest_s3_objects(
                     })
                     seen_ids.add(k)
                 processed += len(chunk)
-                print(f"  text: {processed}/{len(good_pairs)}")
+                prog_every = INGEST_PROGRESS_EVERY or embed_batch
+                if processed % max(1, prog_every) == 0 or processed >= len(good_pairs):
+                    print(f"  text: {processed}/{len(good_pairs)}")
 
         # 5) PDFs (batched)
         if pdf_keys:
@@ -485,11 +607,13 @@ def ingest_s3_objects(
                     })
                     seen_ids.add(k)
                 processed += len(chunk)
-                print(f"  pdfs: {processed}/{len(pairs)}")
+                prog_every = INGEST_PROGRESS_EVERY or embed_batch
+                if processed % max(1, prog_every) == 0 or processed >= len(pairs):
+                    print(f"  pdfs: {processed}/{len(pairs)}")
 
-        # 6) LiDAR (small-batched)
+        # 6) LiDAR (batched)
         if lidar_keys:
-            small_batch = max(1, embed_batch // LIDAR_BATCH_DIVISOR)
+            small_batch = LIDAR_EMBED_BATCH if LIDAR_EMBED_BATCH > 0 else max(1, embed_batch // LIDAR_BATCH_DIVISOR)
             good_lidar = [k for k in lidar_keys if isinstance(blobs.get(k), (bytes, bytearray))]
             processed = 0
             for chunk_keys in _batch(good_lidar, small_batch):
@@ -508,7 +632,7 @@ def ingest_s3_objects(
                     continue
                 try:
                     if hasattr(lidar_embedder, "embed_pointclouds"):
-                        vecs = lidar_embedder.embed(pts_list)  # (B,D)
+                        vecs = lidar_embedder.embed_pointclouds(pts_list)  # (B,D)
                     else:
                         vecs = [lidar_embedder.embed(pts) for pts in pts_list]
                 except Exception:
@@ -522,7 +646,9 @@ def ingest_s3_objects(
                     })
                     seen_ids.add(k)
                 processed += len(valid_keys)
-                print(f"  lidar: {processed}/{len(good_lidar)}")
+                prog_every = INGEST_PROGRESS_EVERY or small_batch
+                if processed % max(1, prog_every) == 0 or processed >= len(good_lidar):
+                    print(f"  lidar: {processed}/{len(good_lidar)}")
 
         if not rows:
             print("  (no rows in this batch)")
@@ -576,3 +702,174 @@ def ingest_s3_objects(
         pass
 
     return total_written
+
+
+def _process_one_batch(
+    bidx: int,
+    master_keys: List[str],
+    blobs: Dict[str, bytes | Exception],
+    manager: LanceDBManager,
+    writer: _UpsertWriter,
+    bucket: str,
+    table_name: str,
+    embed_batch: int,
+    write_chunk: int,
+    pdf_max_pages: int,
+    text_embedder,
+    image_embedder,
+    lidar_embedder,
+    progress_every: int,
+    lidar_embed_batch_eff: Optional[int],
+    lidar_batch_divisor_eff: int,
+) -> int:
+    """Process one batch (shared by streaming/non-streaming paths). Returns rows written."""
+    # split by modality
+    img_keys: List[str] = []
+    pdf_keys: List[str] = []
+    text_keys: List[str] = []
+    lidar_keys: List[str] = []
+    for k in master_keys:
+        ext = os.path.splitext(k)[1].lower()
+        if ext in IMAGE_EXTS:
+            img_keys.append(k)
+        elif ext in PDF_EXTS:
+            pdf_keys.append(k)
+        elif ext in TEXT_EXTS:
+            text_keys.append(k)
+        elif ext in LIDAR_EXTS:
+            lidar_keys.append(k)
+
+    rows: List[dict] = []
+    seen_ids: set[str] = set()
+
+    # reuse same body as in main loop by copying the logic
+    # images
+    if img_keys:
+        good = [k for k in img_keys if isinstance(blobs.get(k), (bytes, bytearray))]
+        processed = 0
+        for chunk_keys in _batch(good, embed_batch):
+            batch_blobs = [blobs[k] for k in chunk_keys]
+            try:
+                vecs = image_embedder.embed(batch_blobs)
+            except Exception:
+                vecs = [image_embedder.embed(b) for b in batch_blobs]
+            for k, v in zip(chunk_keys, vecs):
+                if k in seen_ids:
+                    continue
+                rows.append({
+                    "id": k, "modality": "image", "embedding": _to_list_vec(v),
+                    "text": None, "image": None, "lidar": None, "path": _s3_path(bucket, k)
+                })
+                seen_ids.add(k)
+            processed += len(chunk_keys)
+            prog_every = (progress_every if progress_every is not None else INGEST_PROGRESS_EVERY) or embed_batch
+            if processed % max(1, prog_every) == 0 or processed >= len(img_keys):
+                print(f"  images: {processed}/{len(img_keys)}")
+
+    # text
+    if text_keys:
+        good_pairs: List[Tuple[str, str]] = []
+        for k in text_keys:
+            b = blobs.get(k)
+            if isinstance(b, (bytes, bytearray)):
+                good_pairs.append((k, _decode_text_bytes(b)))
+        processed = 0
+        for chunk in _batch(good_pairs, embed_batch):
+            texts = [t for _, t in chunk]
+            try:
+                vecs = text_embedder.embed(texts)
+            except Exception:
+                vecs = [text_embedder.embed(t) for t in texts]
+            for (k, text), v in zip(chunk, vecs):
+                if k in seen_ids:
+                    continue
+                rows.append({
+                    "id": k, "modality": "text", "embedding": _to_list_vec(v),
+                    "text": text, "image": None, "lidar": None, "path": _s3_path(bucket, k)
+                })
+                seen_ids.add(k)
+            processed += len(chunk)
+            prog_every = (progress_every if progress_every is not None else INGEST_PROGRESS_EVERY) or embed_batch
+            if processed % max(1, prog_every) == 0 or processed >= len(good_pairs):
+                print(f"  text: {processed}/{len(good_pairs)}")
+
+    # pdfs
+    if pdf_keys:
+        pairs: List[Tuple[str, str]] = []
+        for k in pdf_keys:
+            b = blobs.get(k)
+            if isinstance(b, (bytes, bytearray)):
+                txt = _extract_pdf_text(b, max_pages=pdf_max_pages)
+                pairs.append((k, txt if txt.strip() else ""))
+        processed = 0
+        for chunk in _batch(pairs, embed_batch):
+            texts = [t for _, t in chunk]
+            try:
+                vecs = text_embedder.embed(texts)
+            except Exception:
+                vecs = [text_embedder.embed(t) for t in texts]
+            for (k, text), v in zip(chunk, vecs):
+                if k in seen_ids:
+                    continue
+                rows.append({
+                    "id": k, "modality": "pdf", "embedding": _to_list_vec(v),
+                    "text": text or "Empty PDF document", "image": None, "lidar": None, "path": _s3_path(bucket, k)
+                })
+                seen_ids.add(k)
+            processed += len(chunk)
+            prog_every = (progress_every if progress_every is not None else INGEST_PROGRESS_EVERY) or embed_batch
+            if processed % max(1, prog_every) == 0 or processed >= len(pairs):
+                print(f"  pdfs: {processed}/{len(pairs)}")
+
+    # lidar
+    if lidar_keys:
+        small_batch = (
+            int(lidar_embed_batch_eff)
+            if (lidar_embed_batch_eff is not None and int(lidar_embed_batch_eff) > 0)
+            else max(1, embed_batch // max(1, int(lidar_batch_divisor_eff)))
+        )
+        good_lidar = [k for k in lidar_keys if isinstance(blobs.get(k), (bytes, bytearray))]
+        processed = 0
+        for chunk_keys in _batch(good_lidar, small_batch):
+            pts_list = []
+            valid_keys = []
+            for k in chunk_keys:
+                ext = os.path.splitext(k)[1].lower()
+                try:
+                    pts = _load_lidar_bytes(ext, blobs[k])
+                    if pts.size > 0:
+                        pts_list.append(pts)
+                        valid_keys.append(k)
+                except Exception:
+                    continue
+            if not valid_keys:
+                continue
+            try:
+                if hasattr(lidar_embedder, "embed_pointclouds"):
+                    vecs = lidar_embedder.embed_pointclouds(pts_list)
+                else:
+                    vecs = [lidar_embedder.embed(pts) for pts in pts_list]
+            except Exception:
+                vecs = [lidar_embedder.embed(pts) for pts in pts_list]
+            for k, v in zip(valid_keys, vecs):
+                if k in seen_ids:
+                    continue
+                rows.append({
+                    "id": k, "modality": "lidar", "embedding": _to_list_vec(v),
+                    "text": None, "image": None, "lidar": None, "path": _s3_path(bucket, k)
+                })
+                seen_ids.add(k)
+            processed += len(valid_keys)
+            prog_every = (progress_every if progress_every is not None else INGEST_PROGRESS_EVERY) or small_batch
+            if processed % max(1, prog_every) == 0 or processed >= len(good_lidar):
+                print(f"  lidar: {processed}/{len(good_lidar)}")
+
+    if not rows:
+        print("  (no rows in this batch)")
+        return 0
+
+    if bidx == 1:
+        writer.ensure_table(table_name, rows, mode="append")  # table should exist or be created
+    written = writer.upsert_rows(table_name, rows)
+    print(f"  wrote {written} rows (stream)")
+    return written

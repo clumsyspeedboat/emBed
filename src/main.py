@@ -166,7 +166,16 @@ def cmd_ingest(
     bucket: str, prefix: str, table: str,
     minio: MinioConfig, lcfg: LanceDBConfig,
     include_ext: Optional[list[str]], exclude_ext: Optional[list[str]],
-    max_files: Optional[int], dry_run: bool, mode: str, create_index: bool
+    max_files: Optional[int], dry_run: bool, mode: str, create_index: bool,
+    *,
+    workers: Optional[int] = None,
+    embed_batch: Optional[int] = None,
+    write_chunk: Optional[int] = None,
+    pdf_max_pages: Optional[int] = None,
+    lidar_embed_batch: Optional[int] = None,
+    lidar_batch_divisor: Optional[int] = None,
+    progress_every: Optional[int] = None,
+    stream_list: bool = False,
 ) -> None:
     manager = LanceDBManager(lcfg)
     s3 = MinIOClient(minio)
@@ -185,10 +194,28 @@ def cmd_ingest(
     include_ext = _norm(include_ext)
     exclude_ext = _norm(exclude_ext)
 
+    kwargs: Dict[str, Any] = {
+        "include_ext": include_ext, "exclude_ext": exclude_ext,
+        "max_files": max_files, "dry_run": dry_run, "mode": mode,
+        "stream_list": bool(stream_list),
+    }
+    if isinstance(workers, int):
+        kwargs["workers"] = workers
+    if isinstance(embed_batch, int):
+        kwargs["embed_batch"] = embed_batch
+    if isinstance(write_chunk, int):
+        kwargs["write_chunk"] = write_chunk
+    if isinstance(pdf_max_pages, int):
+        kwargs["pdf_max_pages"] = pdf_max_pages
+    if isinstance(progress_every, int):
+        kwargs["progress_every"] = progress_every
+    if isinstance(lidar_embed_batch, int):
+        kwargs["lidar_embed_batch"] = lidar_embed_batch
+    if isinstance(lidar_batch_divisor, int):
+        kwargs["lidar_batch_divisor"] = lidar_batch_divisor
+    # lidar tuning via env primarily; stream path reads module-level constants
     rows_ingested = ingest_s3_objects(
-        manager, s3, bucket, prefix or "", table,
-        include_ext=include_ext, exclude_ext=exclude_ext,
-        max_files=max_files, dry_run=dry_run, mode=mode
+        manager, s3, bucket, prefix or "", table, **kwargs
     )
 
     # Auto-index
@@ -196,11 +223,26 @@ def cmd_ingest(
         echo("\n--- Auto-creating index post-ingestion ---")
         cmd_create_index(table, lcfg)
 
-def cmd_create_index(table: str, lcfg: LanceDBConfig) -> None:
+def cmd_create_index(
+    table: str, lcfg: LanceDBConfig,
+    *, partitions: Optional[int] = None, m: Optional[int] = None,
+    metric: Optional[str] = None, num_bits: Optional[int] = None,
+    opq: bool = False, max_train_rows: Optional[int] = None,
+    min_rows: Optional[int] = None,
+) -> None:
     t0 = time.perf_counter()
     manager = LanceDBManager(lcfg)
     try:
-        manager.create_index(table)
+        manager.create_index(
+            table,
+            num_partitions=partitions,
+            num_sub_vectors=m,
+            metric=metric,
+            num_bits=num_bits,
+            use_opq=opq,
+            max_train_rows=max_train_rows,
+            min_rows_for_index=min_rows,
+        )
         duration = time.perf_counter() - t0
         echo(f"[green]Successfully created index for table '{table}' in {duration:.2f}s.[/green]")
     except Exception as e:
@@ -215,12 +257,13 @@ def _snippet(row: Dict[str, Any], max_chars: int = 120) -> str:
 
 def cmd_search(
     table: str, modality: str, query: str,
-    topk: int, where: Optional[str], lcfg: LanceDBConfig
+    topk: int, where: Optional[str], lcfg: LanceDBConfig,
+    metric: Optional[str] = None,
 ) -> None:
     manager = LanceDBManager(lcfg)
     tbl = manager.get_table(table)
     searcher = MultiModalSearcher(tbl)
-    df: pd.DataFrame = searcher.search(query, modality, topk, where)
+    df: pd.DataFrame = searcher.search(query, modality, topk, where, metric)
     heading("Search Results")
     rows = []
     for _, r in df.iterrows():
@@ -288,6 +331,10 @@ def build_parser() -> argparse.ArgumentParser:
     pi.add_argument("--bucket", required=True)
     pi.add_argument("--prefix", nargs="?", const="", default="", help="Optional prefix (empty = root)")
     pi.add_argument("--table", default="multimodal")
+    pi.add_argument("--lidar-embed-batch", type=int, default=None, 
+                   help="LiDAR embedding batch size (default: from env LIDAR_EMBED_BATCH)")
+    pi.add_argument("--lidar-batch-divisor", type=int, default=None,
+                   help="Divisor for LiDAR batch size if --lidar-embed-batch not set (default: from env LIDAR_BATCH_DIVISOR)")
     pi.add_argument(
         "--include-ext", nargs="*", default=None,
         help=f"Whitelist extensions (default: {sorted(DEFAULT_EXTS)})"
@@ -297,9 +344,23 @@ def build_parser() -> argparse.ArgumentParser:
     pi.add_argument("--dry-run", action="store_true", help="Preview only, don't write")
     pi.add_argument("--mode", choices=["overwrite", "append"], default="overwrite")
     pi.add_argument("--create-index", action="store_true", help="Create a search index after ingestion completes")
+    # Performance knobs (override env)
+    pi.add_argument("--workers", type=int, default=None, help="S3 download concurrency")
+    pi.add_argument("--embed-batch", type=int, default=None, help="Embedding batch size for text/image/pdf")
+    pi.add_argument("--write-chunk", type=int, default=None, help="Rows per DB write chunk")
+    pi.add_argument("--pdf-max-pages", type=int, default=None, help="Max PDF pages to extract per document")
+    pi.add_argument("--progress-every", type=int, default=None, help="Print progress every N items (0=per-batch)")
+    pi.add_argument("--stream-list", action="store_true", help="Stream S3 listing to reduce memory usage")
 
     p_idx = sub.add_parser("create-index", help="Create a performance index for a table (run after ingest)")
     p_idx.add_argument("--table", default="multimodal", help="Name of the table to index")
+    p_idx.add_argument("--partitions", type=int, default=None, help="IVF partitions (nlist); overrides heuristic")
+    p_idx.add_argument("--m", type=int, default=None, help="PQ sub-vectors m (dim must be divisible)")
+    p_idx.add_argument("--metric", choices=["l2", "cosine"], default=None, help="Index metric (defaults to l2)")
+    p_idx.add_argument("--num-bits", type=int, default=None, help="PQ codebook bits per sub-vector (if supported)")
+    p_idx.add_argument("--opq", action="store_true", help="Enable OPQ rotation (if supported)")
+    p_idx.add_argument("--max-train-rows", type=int, default=None, help="Limit training sample size")
+    p_idx.add_argument("--min-rows", type=int, default=None, help="Minimum rows required to build an index")
 
     ps = sub.add_parser("search", help="Vector search")
     ps.add_argument("--table", default="multimodal")
@@ -307,6 +368,12 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--query", required=True)
     ps.add_argument("--topk", type=int, default=5)
     ps.add_argument("--where", type=str, default=None, help="e.g. \"modality = 'pdf'\"")
+    ps.add_argument(
+        "--metric",
+        choices=["l2", "cosine", "dot"],
+        default=os.getenv("LANCEDB_METRIC", "l2"),
+        help="Distance metric: l2 (euclidean), cosine, or dot (inner product).",
+    )
 
     pp = sub.add_parser("peek", help="Show first N rows")
     pp.add_argument("--table", default="multimodal")
@@ -336,12 +403,21 @@ def main() -> None:
         cmd_ingest(
             args.bucket, args.prefix, args.table, minio, lcfg,
             args.include_ext, args.exclude_ext, args.max_files,
-            args.dry_run, args.mode, args.create_index
+            args.dry_run, args.mode, args.create_index,
+            workers=args.workers, embed_batch=args.embed_batch, write_chunk=args.write_chunk,
+            pdf_max_pages=args.pdf_max_pages, progress_every=args.progress_every,
+            lidar_embed_batch=args.lidar_embed_batch, lidar_batch_divisor=args.lidar_batch_divisor,
+            stream_list=args.stream_list,
         )
     elif args.cmd == "create-index":
-        cmd_create_index(args.table, lcfg)
+        cmd_create_index(
+            args.table, lcfg,
+            partitions=args.partitions, m=args.m, metric=args.metric,
+            num_bits=args.num_bits, opq=args.opq, max_train_rows=args.max_train_rows,
+            min_rows=args.min_rows,
+        )
     elif args.cmd == "search":
-        cmd_search(args.table, args.modality, args.query, args.topk, args.where, lcfg)
+        cmd_search(args.table, args.modality, args.query, args.topk, args.where, lcfg, args.metric)
     elif args.cmd == "peek":
         cmd_peek(args.table, args.n, lcfg)
     elif args.cmd == "stats":
