@@ -398,187 +398,214 @@ PAGE = """<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>LanceDB Search</title>
 <style>
-:root{{--b:#111827;--m:#6b7280;--p:#2563eb;--bd:#e5e7eb;--bg:#f9fafb}}
+:root{{--bg:#0f172a;--surface:#f8fafc;--card:#ffffff;--accent:#2563eb;--accent-dark:#1d4ed8;--muted:#64748b;--border:#e2e8f0;--text:#0f172a;--shadow:0 24px 48px -28px rgba(15,23,42,.55)}}
 *{{box-sizing:border-box}}
-body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:var(--bg);color:var(--b)}}
-.container{{max-width:1100px;margin:0 auto;padding:24px}}
-.card{{background:#fff;border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:16px}}
-h1{{font-size:1.5rem;margin:0 0 12px}}
-h2{{font-size:1.1rem;margin:0 0 8px;color:var(--m)}}
-.row{{display:grid;grid-template-columns:1fr;gap:12px}}
-@media(min-width:900px){{.row{{grid-template-columns:2fr 1fr 1fr}}}}
-input[type=text],select,button{{width:100%;padding:.6rem;border:1px solid var(--bd);border-radius:8px;background:#fff}}
-button{{background:var(--p);border-color:var(--p);color:#fff;cursor:pointer}}
-small{{color:var(--m)}}
-.flex{{display:flex;gap:8px;align-items:center;flex-wrap:wrap}}
-.badge{{display:inline-block;padding:.15rem .45rem;border:1px solid var(--bd);border-radius:6px;background:#fff;font-size:.85rem}}
-.table{{width:100%;border-collapse:collapse;table-layout:fixed}}
-thead th{{position:sticky;top:0;background:#fff}}
-th,td{{border-bottom:1px solid var(--bd);padding:.6rem;text-align:left;vertical-align:top}}
-th.preview,td.preview{{width:220px}}
-th.mod,td.mod{{width:90px}}
-th.dist,td.dist{{width:90px}}
-.truncate{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
-.break{{word-break:break-all}}
-.mono{{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}}
-.err{{color:#b91c1c}}
-.imgbox{{width:200px;height:140px;display:flex;align-items:center;justify-content:center;border:1px solid var(--bd);border-radius:8px;overflow:hidden;background:#fafafa}}
-.imgbox img{{max-width:100%;max-height:100%;object-fit:cover}}
-.kv{{display:grid;grid-template-columns:180px 1fr;gap:6px;margin-top:8px}}
-.kv div{{padding:2px 0;border-bottom:1px dashed #eee}}
-details>summary{{cursor:pointer;user-select:none;color:var(--m)}}
-
-/* Segmented control for modality */
-.seg{{display:flex; gap:6px; background:var(--bg); padding:4px; border:1px solid var(--bd); border-radius:8px}}
-.seg-item{{position:relative}}
-.seg-item input{{position:absolute; opacity:0; pointer-events:none}}
-.seg-item span{{display:inline-block; padding:.45rem .7rem; border-radius:6px; border:1px solid transparent; color:var(--m); background:transparent}}
-.seg-item input:checked + span{{background:var(--p); color:#fff; border-color:var(--p)}}
-.hint{{color:var(--m); font-size:.82rem; margin-top:4px}}
-.note{{color:var(--m); font-size:.9rem}}
+body{{margin:0;font-family:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;background:radial-gradient(circle at top,#e0ecff 0%,#f8fafc 55%,#eef2ff 100%);color:var(--text)}}
+.shell{{max-width:1200px;margin:0 auto;padding:32px 24px 80px}}
+.masthead{{background:rgba(255,255,255,.92);backdrop-filter:blur(14px);border-radius:18px;padding:32px;border:1px solid rgba(226,232,240,.7);box-shadow:var(--shadow);display:flex;flex-direction:column;gap:24px}}
+.masthead h1{{margin:0;font-size:2.05rem;letter-spacing:-.02em}}
+.masthead p{{margin:0;color:var(--muted);font-size:1rem}}
+.stat-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}}
+.stat{{padding:14px 16px;border-radius:14px;background:linear-gradient(135deg,rgba(37,99,235,.08),rgba(255,255,255,.9));border:1px solid rgba(37,99,235,.14);display:flex;flex-direction:column}}
+.stat-label{{font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}}
+.stat-value{{margin-top:4px;font-size:1.05rem;font-weight:600;color:var(--text)}}
+.panel{{margin-top:28px;background:var(--card);border-radius:18px;padding:28px;border:1px solid var(--border);box-shadow:var(--shadow);position:relative}}
+.panel-head{{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:24px}}
+.panel-head h2{{margin:0;font-size:1.35rem;letter-spacing:-.01em;color:var(--text)}}
+.panel-head small{{color:var(--muted)}}
+.form-grid{{display:grid;gap:28px}}
+.form-main{{display:grid;gap:20px}}
+.form-side{{display:grid;gap:20px}}
+@media(min-width:960px){{.form-grid{{grid-template-columns:2fr 1fr;align-items:start}}.form-main{{grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}}.form-main .full-row{{grid-column:1/-1}}}}
+.segmented{{display:flex;gap:8px;padding:6px;background:var(--surface);border-radius:12px;border:1px solid var(--border)}}
+.segmented label{{position:relative;flex:1;font-weight:600}}
+.segmented input{{position:absolute;opacity:0;pointer-events:none}}
+.segmented span{{display:block;padding:11px 14px;border-radius:10px;text-align:center;color:var(--muted);transition:all .18s ease}}
+.segmented input:checked + span{{background:var(--accent);color:#fff;box-shadow:0 16px 24px -18px rgba(37,99,235,.75)}}
+.field{{display:flex;flex-direction:column;gap:8px}}
+.field label{{font-weight:600;color:var(--text);font-size:.95rem}}
+.field input[type=text],.field input[type=number],.field input[type=file],.field select,.field textarea{{width:100%;padding:11px 12px;border-radius:11px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:.95rem;transition:border-color .15s ease,box-shadow .15s ease}}
+.field input[type=text]:focus,.field input[type=number]:focus,.field input[type=file]:focus,.field select:focus,.field textarea:focus{{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(37,99,235,.15)}}
+.field input[type=file]{{padding:14px 12px;background:linear-gradient(95deg,rgba(243,246,255,.85),#fff)}}
+.field .hint{{color:var(--muted);font-size:.82rem}}
+.media-grid{{display:grid;gap:18px}}
+@media(min-width:780px){{.media-grid.two{{grid-template-columns:repeat(2,minmax(0,1fr))}}}}
+.slider-row{{display:flex;gap:14px;align-items:center}}
+.slider-row input[type=range]{{flex:1}}
+.actions{{display:flex;flex-wrap:wrap;gap:16px;align-items:center;margin-top:12px}}
+button[type=submit]{{display:inline-flex;align-items:center;gap:10px;padding:12px 24px;border:none;border-radius:12px;font-weight:600;font-size:1rem;background:linear-gradient(135deg,var(--accent),var(--accent-dark));color:#fff;cursor:pointer;box-shadow:0 20px 36px -20px rgba(37,99,235,.95);transition:transform .15s ease,box-shadow .15s ease}}
+button[type=submit]:hover{{transform:translateY(-1px);box-shadow:0 28px 40px -24px rgba(37,99,235,1)}}
+button[type=submit]:active{{transform:translateY(0)}}
+.note{{color:var(--muted);font-size:.9rem;max-width:420px}}
+.alert,.err{{margin-top:18px;padding:16px 18px;border-radius:14px;background:rgba(220,38,38,.08);border:1px solid rgba(220,38,38,.28);color:#991b1b;font-weight:500}}
+.results{{margin-top:28px;border-radius:20px;background:var(--card);border:1px solid var(--border);box-shadow:var(--shadow);overflow:hidden}}
+.results-header{{padding:22px 28px;display:flex;justify-content:space-between;align-items:center;gap:16px;border-bottom:1px solid var(--border)}}
+.results-header h2{{margin:0;font-size:1.3rem}}
+.results-header span{{color:var(--muted);font-size:.82rem}}
+.table-wrap{{overflow-x:auto}}
+.table{{width:100%;border-collapse:collapse;min-width:820px}}
+.table thead th{{position:sticky;top:0;background:var(--surface);padding:14px 16px;color:var(--muted);font-size:.74rem;letter-spacing:.12em;text-transform:uppercase;border-bottom:1px solid var(--border)}}
+.table td{{padding:14px 16px;border-bottom:1px solid var(--border);vertical-align:middle;font-size:.93rem;color:var(--text);line-height:1.4;word-break:break-word;white-space:normal}}
+.table tr:hover{{background:rgba(37,99,235,.03)}}
+.table th.preview,.table td.preview{{width:210px;vertical-align:middle}}
+.table th.mod,.table td.mod{{width:100px;white-space:nowrap}}
+.table th.dist,.table td.dist{{width:110px;white-space:nowrap}}
+.table td a{{color:var(--accent);text-decoration:underline;word-break:break-all}}
+.truncate{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}}
+.break{{word-break:break-word}}
+.imgbox{{width:200px;height:132px;border-radius:12px;border:1px solid var(--border);background:var(--surface);display:flex;align-items:center;justify-content:center;overflow:hidden;box-shadow:inset 0 1px 0 rgba(255,255,255,.7)}}
+.imgbox img{{max-width:100%;max-height:100%;object-fit:contain;display:block}}
+.kv{{display:grid;grid-template-columns:220px 1fr;gap:14px;margin-top:18px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9rem;background:var(--surface);border-radius:14px;padding:20px;border:1px dashed var(--border);color:var(--text)}}
+.kv div{{padding:2px 0}}
+details summary{{cursor:pointer;color:var(--muted);font-weight:600}}
+.table-wrap p{{padding:26px;color:var(--muted);margin:0}}
+footer{{margin-top:42px;text-align:center;color:var(--muted);font-size:.85rem}}
+@media(max-width:760px){{.masthead{{padding:24px}}.panel{{padding:24px}}.results-header{{padding:22px}}.table{{min-width:100%}}.kv{{grid-template-columns:1fr}}}}
 </style>
 </head>
 <body>
-<div class="container">
-  <div class="card">
-    <h1>LanceDB Search</h1>
-    <div class="flex">
-      <div class="badge">Table: <b>{table}</b></div>
-      <div class="badge">Rows: <b>{rowcount}</b></div>
-      <div class="badge">Duration: <b>{elapsed_ms} ms</b></div>
-      <div class="badge">Images: <b>{show_images}</b></div>
-      <div class="badge">Metric: <b>{metric_name}</b></div>
-      <div class="badge">Probes: <b>{nprobes}</b></div>
-      <div class="badge">Refine: <b>{refine}</b></div>
-      <div class="badge">Index: <b>{index_summary}</b></div>
+<main class="shell">
+  <header class="masthead">
+    <div class="masthead-body">
+      <h1>LanceDB Search</h1>
+      <p>Multimodal retrieval across documents, imagery, and LiDAR frames.</p>
     </div>
-  </div>
+    <div class="stat-grid">
+      <div class="stat"><span class="stat-label">Table</span><span class="stat-value">{table}</span></div>
+      <div class="stat"><span class="stat-label">Rows</span><span class="stat-value">{rowcount}</span></div>
+      <div class="stat"><span class="stat-label">Duration</span><span class="stat-value">{elapsed_ms} ms</span></div>
+      <div class="stat"><span class="stat-label">Images</span><span class="stat-value">{show_images}</span></div>
+      <div class="stat"><span class="stat-label">Metric</span><span class="stat-value">{metric_name}</span></div>
+      <div class="stat"><span class="stat-label">Probes</span><span class="stat-value">{nprobes}</span></div>
+      <div class="stat"><span class="stat-label">Refine</span><span class="stat-value">{refine}</span></div>
+      <div class="stat"><span class="stat-label">Index</span><span class="stat-value">{index_summary}</span></div>
+    </div>
+  </header>
 
-  <div class="card">
-    <h2>Query</h2>
-
-    <form method="post" action="/search" enctype="multipart/form-data">
-      <div class="row" style="margin-bottom:8px">
-        <div>
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Build Query</h2>
+      <small>Uploads capped at {max_bytes} bytes</small>
+    </div>
+    <form method="post" action="/search" enctype="multipart/form-data" class="form-grid" data-search-form>
+      <div class="form-main">
+        <div class="field full-row">
           <label>Modality</label>
-          <div class="seg" role="tablist" aria-label="Modality">
-            <label class="seg-item">
+          <div class="segmented" role="tablist" aria-label="Modality">
+            <label class="seg-option">
               <input type="radio" name="modality" value="text" {m_text}><span>Text</span>
             </label>
-            <label class="seg-item">
+            <label class="seg-option">
               <input type="radio" name="modality" value="image" {m_img}><span>Image</span>
             </label>
             {lidar_seg}
           </div>
-          <div class="hint">Choose the kind of query you’ll send</div>
+          <span class="hint">Choose the embedding pipeline you want to query.</span>
         </div>
 
-        <div>
+        <div class="field mod-section" data-mod="text">
+          <label>Text Query</label>
+          <input type="text" name="q_text" placeholder="e.g. 'warehouse inventory report'" value="{q_text}">
+          <span class="hint">A sentence or short paragraph works best.</span>
+        </div>
+
+        <div class="media-grid two mod-section" data-mod="image">
+          <div class="field">
+            <label>Image File (upload)</label>
+            <input type="file" name="image_file" accept="image/*">
+            <span class="hint">Select a local file to embed on the fly.</span>
+          </div>
+          <div class="field">
+            <label>Image Path (server-local)</label>
+            <input type="text" name="image_path" placeholder="/path/to/image.jpg" value="{image_path}">
+            <span class="hint">Optional: reference a file reachable from the server.</span>
+          </div>
+        </div>
+
+        <div class="media-grid two mod-section" data-mod="lidar" style="{lidar_row}">
+          <div class="field">
+            <label>LiDAR File (.pcd/.bin)</label>
+            <input type="file" name="lidar_file" accept=".pcd,.bin,application/octet-stream">
+            <span class="hint">Upload a single frame point cloud for embedding.</span>
+          </div>
+          <div class="field">
+            <label>LiDAR Path (server-local)</label>
+            <input type="text" name="lidar_path" placeholder="/path/to/scan.pcd" value="{lidar_path}">
+            <span class="hint">Use when the file already resides on the server.</span>
+          </div>
+        </div>
+
+        <details class="full-row">
+          <summary>Advanced filter (WHERE)</summary>
+          <div class="field" style="margin-top:14px">
+            <label class="hint" style="font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">SQL-like predicate</label>
+            <input type="text" name="where" placeholder="e.g. modality = 'pdf' AND path LIKE 's3://%reports%'" value="{where}">
+            <span class="hint">Translated to LanceDB <code>where</code> before scanning.</span>
+          </div>
+        </details>
+      </div>
+
+      <div class="form-side">
+        <div class="field">
           <label>Top-K</label>
           <input type="number" name="topk" min="1" max="2000" step="1" value="{topk}">
-          <div class="hint">Enter how many results to show</div>
+          <span class="hint">Controls how many rows are rendered in the results.</span>
         </div>
-
-        <div>
-          <label>Filter</label>
+        <div class="field">
+          <label>Quick Filter</label>
           <select name="filter">
-            <option value="all" {f_all}>All</option>
+            <option value="all" {f_all}>All modalities</option>
             <option value="text" {f_text}>Text only</option>
             <option value="pdf" {f_pdf}>PDFs only</option>
             <option value="image" {f_image}>Images only</option>
             <option value="lidar" {f_lidar}>LiDAR only</option>
           </select>
-          <div class="hint">Quick pre-filter</div>
+          <span class="hint">Client-side shortcut before additional predicates.</span>
         </div>
-      </div>
-
-      <div class="row" style="margin-bottom:8px">
-        <div>
+        <div class="field">
           <label>Metric</label>
           <select name="metric">
             <option value="l2" {m_l2}>Euclidean (L2)</option>
             <option value="cosine" {m_cos}>Cosine</option>
             <option value="dot" {m_dot}>Dot Product</option>
           </select>
-          <div class="hint">Cosine/Dot recommended; embeddings are L2-normalized</div>
+          <span class="hint">Cosine/Dot recommended; embeddings are L2-normalized.</span>
         </div>
-      </div>
-
-      <!-- Metric threshold -->
-      <div class="row" style="margin-bottom:8px">
-        <div>
+        <div class="field">
           <label id="metric_val_label">{metric_label}</label>
-          <div class="flex" style="gap:10px">
+          <div class="slider-row">
             <input type="range" name="metric_val" min="{m_min}" max="{m_max}" step="{m_step}" value="{m_val}" oninput="document.getElementById('metric_val_num').value=this.value">
             <input id="metric_val_num" type="number" name="metric_val_num" min="{m_min}" max="{m_max}" step="{m_step}" value="{m_val}" oninput="document.querySelector('input[name=metric_val]').value=this.value">
           </div>
-          <div class="hint">Slider adapts to chosen metric</div>
+          <span class="hint">Applies client-side after the search results are fetched.</span>
         </div>
-      </div>
-
-      <!-- Text query -->
-      <div class="mod-section" data-mod="text" style="margin-top:4px">
-        <label>Text Query</label>
-        <input type="text" name="q_text" placeholder="e.g. 'beethoven', 'invoice', 'lidar map'…" value="{q_text}">
-        <div class="hint">Best for most searches</div>
-      </div>
-
-      <!-- Image query -->
-      <div class="row mod-section" data-mod="image" style="margin-top:8px">
-        <div>
-          <label>Image File (upload)</label>
-          <input type="file" name="image_file" accept="image/*">
-          <div class="hint">We’ll embed the uploaded image</div>
+        <div class="actions">
+          <button type="submit">Run Search</button>
+          <span class="note">Tip: start with text, then add image or LiDAR queries for visual validation.</span>
         </div>
-        <div>
-          <label>Image Path (server-local)</label>
-          <input type="text" name="image_path" placeholder="/path/to/image.jpg" value="{image_path}">
-          <div class="hint">Optional, if the file already exists on this server</div>
-        </div>
-      </div>
-
-      <!-- LiDAR query -->
-      <div class="row mod-section" data-mod="lidar" style="{lidar_row}; margin-top:8px">
-        <div>
-          <label>LiDAR File (.pcd/.bin)</label>
-          <input type="file" name="lidar_file" accept=".pcd,.bin,application/octet-stream">
-          <div class="hint">Single frame point cloud</div>
-        </div>
-        <div>
-          <label>LiDAR Path (server-local)</label>
-          <input type="text" name="lidar_path" placeholder="/path/to/scan.pcd" value="{lidar_path}">
-        </div>
-      </div>
-
-      <!-- Advanced -->
-      <details style="margin-top:10px">
-        <summary>Advanced filter (WHERE)</summary>
-        <div style="margin-top:8px">
-          <input type="text" name="where" placeholder="e.g. modality = 'pdf' AND path LIKE 's3://%reports%'" value="{where}">
-          <div class="hint">SQL-style predicate evaluated server-side</div>
-        </div>
-      </details>
-
-      <!-- Submit -->
-      <div style="margin-top:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
-        <button type="submit">Search</button>
-        <span class="note">Tip: most users should stick with <b>Text</b> queries. Uploads capped at {max_bytes} bytes.</span>
       </div>
     </form>
-
     {error_html}
-  </div>
+  </section>
 
-  <div class="card">
-    <h2>Results</h2>
-    {results_html}
-  </div>
+  <section class="results">
+    <div class="results-header">
+      <h2>Results</h2>
+      <span>Metric threshold and filters apply instantly—experiment freely.</span>
+    </div>
+    <div class="table-wrap">
+      {results_html}
+    </div>
+  </section>
 
-  <div class="card">
-    <h2>Config Snapshot</h2>
-    <details>
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Config Snapshot</h2>
+      <small>Loaded from environment and shared with the frontend for transparency.</small>
+    </div>
+    <details open>
       <summary>Show configuration</summary>
-      <div class="kv mono" style="margin-top:8px">
+      <div class="kv">
         <div>URI</div><div>{lancedb_uri}</div>
         <div>S3 Endpoint</div><div>{endpoint}</div>
         <div>Region</div><div>{region}</div>
@@ -587,32 +614,31 @@ details>summary{{cursor:pointer;user-select:none;color:var(--m)}}
         <div>Secret</div><div>{secret}</div>
       </div>
     </details>
-  </div>
-</div>
+  </section>
 
-<!-- Tiny script to toggle sections by modality and adapt metric slider -->
+  <footer>Powered by LanceDB · FastAPI · MinIO</footer>
+</main>
+
 <script>
 (function(){{
-  const card = document.currentScript.parentElement;
-  const form = card.querySelector('form');
+  const form = document.querySelector('form[data-search-form]');
+  if (!form) return;
   const metricSelect = form.querySelector('select[name="metric"]');
   const slider = form.querySelector('input[name="metric_val"]');
   const num = form.querySelector('#metric_val_num');
-  function showSections(mod){{ 
-    form.querySelectorAll('.mod-section').forEach(el=>{{ 
-      const want = el.getAttribute('data-mod');
-      el.style.display = (want===mod) ? '' : 'none';
+  function showSections(mod){{
+    form.querySelectorAll('.mod-section').forEach(el => {{
+      const target = el.getAttribute('data-mod');
+      el.style.display = (target === mod) ? '' : 'none';
     }});
   }}
-  function currentMod(){{ 
+  function currentMod(){{
     const el = form.querySelector('input[name="modality"]:checked');
-    if (el) return el.value;
-    const sel = form.querySelector('select[name="modality"]');
-    return sel ? sel.value : 'text';
+    return el ? el.value : 'text';
   }}
-  function applyMetricMeta(m){{
-    if(!slider || !num) return;
-    if(m === 'l2'){{
+  function applyMetricMeta(metric){{
+    if (!slider || !num) return;
+    if (metric === 'l2'){{
       slider.min = '0.0'; slider.max = '2.0'; slider.step = '0.01';
       num.min = '0.0'; num.max = '2.0'; num.step = '0.01';
     }} else {{
@@ -620,13 +646,16 @@ details>summary{{cursor:pointer;user-select:none;color:var(--m)}}
       num.min = '-1.0'; num.max = '1.0'; num.step = '0.01';
     }}
   }}
-  form.addEventListener('change', e=>{{ 
-    if(e.target && e.target.name==='modality'){{ showSections(e.target.value); }}
-    if(e.target && e.target.name==='metric'){{ applyMetricMeta(e.target.value); }}
+  form.addEventListener('change', ev => {{
+    if (ev.target && ev.target.name === 'modality'){{
+      showSections(ev.target.value);
+    }}
+    if (ev.target && ev.target.name === 'metric'){{
+      applyMetricMeta(ev.target.value);
+    }}
   }});
-  // init
   showSections(currentMod());
-  if(metricSelect) applyMetricMeta(metricSelect.value || 'l2');
+  if (metricSelect) applyMetricMeta(metricSelect.value || 'l2');
 }})();
 </script>
 </body>
@@ -697,7 +726,7 @@ def home(
         m_text="checked" if modality == "text" else "",
         m_img="checked" if modality == "image" else "",
         lidar_seg=(
-            f"<label class='seg-item'><input type='radio' name='modality' value='lidar' {'checked' if modality=='lidar' else ''}><span>LiDAR</span></label>"
+            f"<label class='seg-option'><input type='radio' name='modality' value='lidar' {'checked' if modality=='lidar' else ''}><span>LiDAR</span></label>"
             if ALLOW_LIDAR else ""
         ),
         topk=str(int(topk)),
@@ -765,7 +794,7 @@ async def search(
             m_text="checked" if modality == "text" else "",
             m_img="checked" if modality == "image" else "",
             lidar_seg=(
-                f"<label class='seg-item'><input type='radio' name='modality' value='lidar' {'checked' if modality=='lidar' else ''}><span>LiDAR</span></label>"
+                f"<label class='seg-option'><input type='radio' name='modality' value='lidar' {'checked' if modality=='lidar' else ''}><span>LiDAR</span></label>"
                 if ALLOW_LIDAR else ""
             ),
             topk=str(int(topk)),
@@ -871,7 +900,7 @@ async def search(
         m_text="checked" if modality == "text" else "",
         m_img="checked" if modality == "image" else "",
         lidar_seg=(
-            f"<label class='seg-item'><input type='radio' name='modality' value='lidar' {'checked' if modality=='lidar' else ''}><span>LiDAR</span></label>"
+            f"<label class='seg-option'><input type='radio' name='modality' value='lidar' {'checked' if modality=='lidar' else ''}><span>LiDAR</span></label>"
             if ALLOW_LIDAR else ""
         ),
         topk=str(int(topk)),
