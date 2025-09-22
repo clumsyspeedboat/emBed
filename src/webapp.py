@@ -6,11 +6,14 @@ import io
 import os
 import time
 import html
+import urllib.parse
+from functools import lru_cache
 from typing import Optional, Iterable
 
 import numpy as np
-from fastapi import FastAPI, UploadFile, File, Form, Query
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from PIL import Image
+from fastapi import FastAPI, UploadFile, File, Form, Query, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.config import LanceDBConfig, MinioConfig
@@ -130,6 +133,82 @@ def _load_lidar_bytes(ext: str, blob: bytes) -> np.ndarray:
             return np.zeros((0, 3), dtype=np.float32)
     return np.zeros((0, 3), dtype=np.float32)
 
+
+@lru_cache(maxsize=4)
+def _blank_lidar_png(size: int = 256) -> bytes:
+    buf = io.BytesIO()
+    Image.new("L", (size, size), color=240).save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def _lidar_preview_png(points: np.ndarray, *, size: int = 256) -> bytes:
+    if points is None or len(points) == 0:
+        return _blank_lidar_png(size)
+    pts = np.asarray(points, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[1] < 2:
+        return _blank_lidar_png(size)
+
+    xy = pts[:, :2]
+    xy = xy[~np.isnan(xy).any(axis=1)]
+    if xy.size == 0:
+        return _blank_lidar_png(size)
+
+    try:
+        low = np.percentile(xy, 1, axis=0)
+        high = np.percentile(xy, 99, axis=0)
+    except Exception:
+        return _blank_lidar_png(size)
+
+    span = np.maximum(high - low, 1e-3)
+    norm = (xy - low) / span
+    if norm.size == 0:
+        return _blank_lidar_png(size)
+
+    mask = ((norm >= 0.0) & (norm <= 1.0)).all(axis=1)
+    clipped = norm[mask] if mask.any() else np.clip(norm, 0.0, 1.0)
+    if clipped.size == 0:
+        return _blank_lidar_png(size)
+
+    xs = np.clip((clipped[:, 0] * (size - 1)).astype(np.int32), 0, size - 1)
+    ys = np.clip(((1.0 - clipped[:, 1]) * (size - 1)).astype(np.int32), 0, size - 1)
+
+    grid = np.zeros((size, size), dtype=np.float32)
+    np.add.at(grid, (ys, xs), 1.0)
+    grid = np.log1p(grid)
+    gmax = float(grid.max())
+    if gmax <= 0.0:
+        return _blank_lidar_png(size)
+    grid = grid / gmax
+    array = np.clip(255.0 - (grid * 255.0), 0, 255).astype(np.uint8)
+
+    buf = io.BytesIO()
+    Image.fromarray(array, mode="L").save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def _fetch_lidar_blob(path: str) -> tuple[bytes, str]:
+    if not path:
+        raise FileNotFoundError("empty path")
+    ext = os.path.splitext(path)[1].lower()
+    if path.startswith("s3://"):
+        parsed = _parse_s3_uri(path)
+        if not parsed:
+            raise FileNotFoundError("invalid s3 uri")
+        bucket, key = parsed
+        client = MinIOClient(MinioConfig())
+        data = client.get_object_bytes(bucket, key)
+        key_ext = os.path.splitext(key)[1].lower()
+        return data, (key_ext or ext)
+    with open(path, "rb") as f:
+        return f.read(), ext
+
+
+@lru_cache(maxsize=64)
+def _cached_lidar_preview(path: str) -> bytes:
+    data, ext = _fetch_lidar_blob(path)
+    pts = _load_lidar_bytes(ext, data)
+    return _lidar_preview_png(pts)
+
 def _index_summary(tbl: object) -> str:
     try:
         li = getattr(tbl, "list_indices", None) or getattr(tbl, "list_indexes", None)
@@ -204,17 +283,23 @@ def _results_table(df, s3: Optional[MinIOClient], metric: str) -> str:
         text = r.get("text") or ""
         path = r.get("path", "")
         preview_html = ""
+        url = _presign_with_client(path, s3)
 
         # Previews
         if SHOW_IMAGES and path:
-            url = _presign_with_client(path, s3)
             if url and mod == "image":
                 preview_html = f"<div class='imgbox'><img loading='lazy' src='{url}' alt='preview'></div>"
             elif url and mod == "pdf":
                 preview_html = f"<div class='imgbox' title='PDF'><a href='{url}' target='_blank' rel='noreferrer'>🧾 open</a></div>"
+            elif mod == "lidar" and ALLOW_LIDAR:
+                q_path = urllib.parse.quote_plus(path)
+                preview_html = (
+                    "<div class='imgbox'><img loading='lazy' alt='LiDAR preview' "
+                    f"src='/preview/lidar?path={q_path}'></div>"
+                )
 
         # Linkify path if we got a URL; otherwise plain text
-        url_for_path = _presign_with_client(path, s3)
+        url_for_path = url
         path_cell = (
             f"<a class='break' href='{url_for_path}' target='_blank' rel='noreferrer' title='{_escape(path)}'>{_escape(path)}</a>"
             if url_for_path
@@ -551,6 +636,26 @@ details>summary{{cursor:pointer;user-select:none;color:var(--m)}}
 # --------------------------------------------------------------------------------------
 # Routes
 # --------------------------------------------------------------------------------------
+
+
+@app.get("/preview/lidar")
+def lidar_preview(path: str = Query(..., description="LiDAR object path")):
+    if not (ALLOW_LIDAR and SHOW_IMAGES):
+        raise HTTPException(status_code=404)
+    target = path.strip()
+    if not target:
+        raise HTTPException(status_code=404, detail="Path missing")
+    try:
+        png_bytes = _cached_lidar_preview(target)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="LiDAR object not found")
+    except Exception:
+        raise HTTPException(status_code=502, detail="Failed to render LiDAR preview")
+    if not png_bytes:
+        raise HTTPException(status_code=404, detail="Preview unavailable")
+    return StreamingResponse(io.BytesIO(png_bytes), media_type="image/png")
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(
     table: str = Query(default=TABLE_DEFAULT),
