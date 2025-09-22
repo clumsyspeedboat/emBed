@@ -71,3 +71,7 @@ After generating TLS and Basic Auth, you can run:
     bash deploy/scripts/deploy.sh
 
 This wires up the systemd unit, Nginx site, reloads services, and runs a quick health check.
+
+
+10) Redeploy Nginx after changes
+    sudo nginx -t && sudo systemctl reload nginx
