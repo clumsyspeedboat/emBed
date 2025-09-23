@@ -445,7 +445,7 @@ button[type=submit]:active{{transform:translateY(0)}}
 .table-wrap{{overflow-x:auto}}
 .table{{width:100%;border-collapse:collapse;min-width:820px}}
 .table thead th{{position:sticky;top:0;background:var(--surface);padding:14px 16px;color:var(--muted);font-size:.74rem;letter-spacing:.12em;text-transform:uppercase;border-bottom:1px solid var(--border)}}
-.table td{{padding:14px 16px;border-bottom:1px solid var(--border);vertical-align:middle;font-size:.93rem;color:var(--text);line-height:1.4;word-break:break-word;white-space:normal}}
+.table td{{padding:14px 16px;border-bottom:1px solid var(--border);vertical-align:top;font-size:.93rem;color:var(--text);line-height:1.4;word-break:break-word;white-space:normal}}
 .table tr:hover{{background:rgba(37,99,235,.03)}}
 .table th.preview,.table td.preview{{width:210px;vertical-align:middle}}
 .table th.mod,.table td.mod{{width:100px;white-space:nowrap}}
@@ -454,7 +454,7 @@ button[type=submit]:active{{transform:translateY(0)}}
 .truncate{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}}
 .break{{word-break:break-word}}
 .imgbox{{width:200px;height:132px;border-radius:12px;border:1px solid var(--border);background:var(--surface);display:flex;align-items:center;justify-content:center;overflow:hidden;box-shadow:inset 0 1px 0 rgba(255,255,255,.7)}}
-.imgbox img{{max-width:100%;max-height:100%;object-fit:contain;display:block}}
+.imgbox img{{width:100%;height:100%;object-fit:cover;display:block}}
 .kv{{display:grid;grid-template-columns:220px 1fr;gap:14px;margin-top:18px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9rem;background:var(--surface);border-radius:14px;padding:20px;border:1px dashed var(--border);color:var(--text)}}
 .kv div{{padding:2px 0}}
 details summary{{cursor:pointer;color:var(--muted);font-weight:600}}
