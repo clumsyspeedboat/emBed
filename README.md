@@ -171,16 +171,17 @@ INGEST_PROGRESS_EVERY=1000
 
 ## Files
 
-* `src/config.py` — loads `.env`, bridges MINIO↔AWS vars, prepares LanceDB options.
-* `src/storage.py` — thin MinIO/S3 helper (list/get/upload) via `boto3`.
-* `src/lancedb_manager.py` — connects to LanceDB and manages tables.
-* `src/embedding.py` — deterministic dummy embedders (text/image/lidar) for testing.
-* `src/multimodal_dataset.py` — tiny synthetic dataset generator.
-* `src/ingest.py` — ingests PDFs/images from S3, extracts PDF text, writes LanceDB (filters/dry-run/append).
+* `src/config/` — loads `.env`, normalises MINIO↔AWS vars, and exposes typed config helpers.
+* `src/storage/` — thin MinIO/S3 helper (list/get/upload) via `boto3`.
+* `src/vectordb/` — vector database managers; LanceDB implementation lives here (`src/lancedb_manager.py` remains as a shim).
+* `src/embedding/` — real CLIP/sentence-transformer embedders plus helpers and a runtime factory.
+* `src/core/` — cross-cutting runtime primitives (search, ranking, future orchestration helpers).
+* `src/ingest/` — modular ingestion helpers and pipeline for PDFs/images/text/LiDAR.
 * `src/search.py` — similarity search with optional row filtering.
-* `src/cli_utils.py` — pretty CLI output (`rich`).
-* `src/main.py` — CLI with subcommands: `config`, `health`, `ls-s3`, `ingest-s3`, `search`, `peek`, `stats`, `reset`.
-* `src/webapp.py` — minimal FastAPI search page (set table via `WEBAPP_TABLE`).
+* `src/services.py` — shim that re-exports the container from `src/core/services`.
+* `src/cli/` — CLI application and utilities.
+* `src/main.py` — CLI entry point delegating to the `src.cli` package.
+* `src/web/` — FastAPI search UI (`src/webapp.py` is a compatibility shim).
 
 ---
 

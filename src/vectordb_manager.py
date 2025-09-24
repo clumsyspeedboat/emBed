@@ -1,26 +1,10 @@
-from abc import ABC, abstractmethod
-from typing import Any, Iterable
-import pyarrow as pa
+"""Purpose: compatibility shim for projects that still import `VectorDBManager` from the legacy module.
+Why extend: keep re-exporting new abstract manager interfaces introduced in `src.vectordb`.
+How extend: import the new class and include it in `__all__`, mirroring any renames made in the vectordb package.
+"""
 
-class VectorDBManager(ABC):
-    @abstractmethod
-    def connect(self, uri: str, storage_options: dict[str, Any]) -> None:
-        """Connect to the vector database and store connection in instance."""
-        pass
+from __future__ import annotations
 
-    @abstractmethod
-    def create_table(self, name: str, data: Iterable[dict[str, Any]], mode: str = "overwrite") -> Any:
-        pass
+from src.vectordb.base import VectorDBManager
 
-    @abstractmethod
-    def create_empty_table(self, name: str, schema: pa.Schema, mode: str = "create") -> Any:
-        pass
-
-    @abstractmethod
-    def get_table(self, name: str) -> Any:
-        pass
-
-    @abstractmethod
-    def create_index(self, table_name: str, num_partitions: int = 256, num_sub_vectors: int = 96) -> None:
-        """Create an index based on the manager's indexing policy."""
-        pass
+__all__ = ["VectorDBManager"]
