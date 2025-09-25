@@ -10,7 +10,7 @@ from typing import Final
 __all__ = ["ensure_dotenv_loaded"]
 
 _DOTENV_LOADED: bool = False
-_ENV_PATH: Final[Path] = Path(__file__).resolve().parent.parent / ".env"
+_ENV_PATH: Final[Path] = Path(__file__).resolve().parents[2] / ".env"
 
 
 def ensure_dotenv_loaded() -> None:

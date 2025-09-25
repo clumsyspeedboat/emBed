@@ -194,6 +194,18 @@ class LanceDBManager(VectorDBManager):
         except Exception as exc:
             raise VectorDBError(f"Failed to open table '{name}': {exc}") from exc
 
+    def list_tables(self) -> list[str]:
+        """Return the list of table names available in the connected LanceDB."""
+        self._ensure_connected()
+        try:
+            names = self._db.table_names()
+        except AttributeError:
+            try:
+                names = self._db.list_tables()
+            except AttributeError:
+                names = []
+        return list(names)
+
     # ------------------------------------------------------------------
     # Index management
     # ------------------------------------------------------------------

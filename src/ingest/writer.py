@@ -29,7 +29,8 @@ class UpsertWriter:
             try:
                 _ = self.manager.get_table(table_name)
             except Exception:
-                self.manager.create_table(table_name, rows[:1], mode="overwrite")
+                seed = rows if rows else []
+                self.manager.create_table(table_name, seed, mode="overwrite")
         self._opened[table_name] = True
 
     def upsert_rows(self, table_name: str, rows: List[dict]) -> int:

@@ -104,6 +104,7 @@ def _process_one_batch(
     bucket: str,
     table_name: str,
     *,
+    mode: str,
     embed_batch: int,
     pdf_max_pages: int,
     text_embedder,
@@ -275,7 +276,7 @@ def _process_one_batch(
         return 0
 
     if bidx == 1:
-        writer.ensure_table(table_name, rows, mode="append")
+        writer.ensure_table(table_name, rows, mode=mode)
     written = writer.upsert_rows(table_name, rows)
     print(f"  wrote {written} rows (stream)")
     return written
@@ -355,6 +356,7 @@ def ingest_s3_objects(
                     writer,
                     bucket,
                     table_name,
+                    mode=mode,
                     embed_batch=embed_batch,
                     pdf_max_pages=pdf_max_pages,
                     text_embedder=text_embedder,
@@ -376,6 +378,7 @@ def ingest_s3_objects(
                 writer,
                 bucket,
                 table_name,
+                mode=mode,
                 embed_batch=embed_batch,
                 pdf_max_pages=pdf_max_pages,
                 text_embedder=text_embedder,
@@ -458,6 +461,7 @@ def ingest_s3_objects(
             writer,
             bucket,
             table_name,
+            mode=mode,
             embed_batch=embed_batch,
             pdf_max_pages=pdf_max_pages,
             text_embedder=text_embedder,
