@@ -3,6 +3,7 @@ env_wsl/
 build_logs.jsonl
 lancedb/
 deploy/
+cache/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -8,6 +8,10 @@ import io
 import os
 from typing import Iterable, List, Optional
 
+# Disable MKLDNN by default to avoid GELU primitive issues triggered on some hosts.
+if "PYTORCH_ENABLE_MKLDNN" not in os.environ:
+    os.environ["PYTORCH_ENABLE_MKLDNN"] = "0"
+
 import numpy as np
 import torch
 from PIL import Image
@@ -16,6 +20,13 @@ from src.embedding.base import pick_device, l2_normalize
 from src.exceptions import EmbeddingError
 
 __all__ = ["ImageEmbedder"]
+
+# Ensure the flag takes effect even if PyTorch was imported earlier.
+try:
+    if os.environ.get("PYTORCH_ENABLE_MKLDNN", "0").strip().lower() in {"0", "false", "no"}:
+        torch.backends.mkldnn.enabled = False
+except Exception:
+    pass
 
 
 class ImageEmbedder:

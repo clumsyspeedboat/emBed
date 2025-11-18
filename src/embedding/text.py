@@ -7,6 +7,10 @@ from __future__ import annotations
 import os
 from typing import Iterable, Optional
 
+# Disable MKLDNN by default to avoid GELU primitive issues on some CPUs.
+if "PYTORCH_ENABLE_MKLDNN" not in os.environ:
+    os.environ["PYTORCH_ENABLE_MKLDNN"] = "0"
+
 import numpy as np
 import torch
 
@@ -14,6 +18,13 @@ from src.embedding.base import pick_device, l2_normalize
 from src.exceptions import EmbeddingError
 
 __all__ = ["TextEmbedder"]
+
+# Ensure the flag takes effect even if PyTorch was imported earlier.
+try:
+    if os.environ.get("PYTORCH_ENABLE_MKLDNN", "0").strip().lower() in {"0", "false", "no"}:
+        torch.backends.mkldnn.enabled = False
+except Exception:
+    pass
 
 
 class TextEmbedder:
