@@ -1,8 +1,8 @@
 Self‑Hosted Deployment (Nginx + Uvicorn + TLS)
 
 Assumptions
-- Project dir: `/home/ansible/git_repos/emBed`
-- Venv: `/home/ansible/git_repos/emBed/env`
+- Project dir: `/path/to/emBed` (the deploy script auto-detects this)
+- Venv: `<project-dir>/env`
 - App: `src.webapp:app`
 - HTTPS on this server’s public IP/DNS
 
@@ -23,7 +23,9 @@ Files: `/etc/ssl/self/lancedb.key` and `/etc/ssl/self/lancedb.crt`.
 Adds/updates `/etc/nginx/.htpasswd`. You’ll be prompted for a password.
 
 4) Systemd unit for Uvicorn
-    sudo install -m 0644 deploy/systemd/lancedb-webapp.service /etc/systemd/system/lancedb-webapp.service
+    REPO_ROOT=$(pwd)
+    sed "s|__REPO_ROOT__|${REPO_ROOT}|g" deploy/systemd/lancedb-webapp.service | \
+      sudo tee /etc/systemd/system/lancedb-webapp.service >/dev/null
     sudo systemctl daemon-reload
     sudo systemctl enable --now lancedb-webapp
     sudo systemctl status lancedb-webapp

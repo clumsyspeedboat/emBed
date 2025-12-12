@@ -1,11 +1,19 @@
-# src/storage.py
-"""Utilities for working with MinIO/S3 object storage."""
+"""Purpose: thin wrapper around boto3's S3 client tailored to MinIO usage.
+Why extend: support additional convenience methods (batch operations, retry policies).
+How extend: add methods or constructor options and lean on `MinioConfig` for new settings.
+"""
 from __future__ import annotations
+
 import os
+from typing import Iterable
+
 import boto3
 from botocore.exceptions import ClientError
-from typing import Iterable
+
 from src.config import MinioConfig
+
+__all__ = ["MinIOClient"]
+
 
 class MinIOClient:
     def __init__(
@@ -21,10 +29,10 @@ class MinIOClient:
         allow_http: bool | None = None,
         force_path_style: bool | None = None,
         virtual_hosted_style: bool | None = None,
-    ):
+    ) -> None:
         """Preferred: pass a MinioConfig. Explicit kwargs override the config."""
         base = config or MinioConfig()
-        eff = MinioConfig(
+        effective = MinioConfig(
             endpoint=endpoint or base.endpoint,
             access_key=access_key or base.access_key,
             secret_key=secret_key or base.secret_key,
@@ -36,11 +44,12 @@ class MinIOClient:
             force_path_style=base.force_path_style if force_path_style is None else force_path_style,
             virtual_hosted_style=base.virtual_hosted_style if virtual_hosted_style is None else virtual_hosted_style,
         )
-        kwargs = eff.to_boto_kwargs()
+        kwargs = effective.to_boto_kwargs()
         self._client = boto3.client("s3", **kwargs)
 
-    # -------- convenience methods --------
-
+    # ----------------------------------------------------------------------------------
+    # Convenience methods
+    # ----------------------------------------------------------------------------------
     def ensure_bucket(self, bucket: str) -> None:
         try:
             self._client.head_bucket(Bucket=bucket)
@@ -70,7 +79,6 @@ class MinIOClient:
         return keys
 
     def iter_objects(self, bucket: str, prefix: str = "") -> Iterable[str]:
-        """Yield keys under bucket/prefix."""
         paginator = self._client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
             for obj in page.get("Contents", []):
@@ -88,11 +96,10 @@ class MinIOClient:
         )
 
     def delete_prefix(self, bucket: str, prefix: str) -> int:
-        """Delete all objects under the given prefix. Returns count."""
-        count = 0
         keys = [{"Key": k} for k in self.iter_objects(bucket, prefix)]
-        for i in range(0, len(keys), 1000):
-            chunk = keys[i:i + 1000]
+        count = 0
+        for idx in range(0, len(keys), 1000):
+            chunk = keys[idx : idx + 1000]
             if not chunk:
                 break
             self._client.delete_objects(Bucket=bucket, Delete={"Objects": chunk})
@@ -100,7 +107,6 @@ class MinIOClient:
         return count
 
     def upload_dir(self, local_dir: str, bucket: str, prefix: str) -> int:
-        """Recursively upload a directory to S3, preserving relative paths."""
         uploaded = 0
         for root, _, files in os.walk(local_dir):
             for fname in files:
@@ -112,11 +118,13 @@ class MinIOClient:
         return uploaded
 
     def delete_objects(self, bucket: str, keys: Iterable[str]) -> int:
-        """Delete a collection of objects in chunks of 1000."""
         keys_list = list(keys)
         count = 0
-        for i in range(0, len(keys_list), 1000):
-            chunk = keys_list[i:i + 1000]
-            self._client.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": k} for k in chunk]})
+        for idx in range(0, len(keys_list), 1000):
+            chunk = keys_list[idx : idx + 1000]
+            self._client.delete_objects(
+                Bucket=bucket,
+                Delete={"Objects": [{"Key": key} for key in chunk]},
+            )
             count += len(chunk)
         return count

@@ -1,41 +1,22 @@
-"""
-Search utilities for querying a multimodal LanceDB table.
-
-Design:
-- Dependency-injected embedders (text/image/lidar) with sane defaults from embedding_runtime.
-- Robust modality handling:
-  • text: str -> embed([text])
-  • image: bytes or file path -> embed([bytes])
-  • lidar: numpy.ndarray or .pcd/.bin file path -> lidar_embedder (batch-friendly if available)
-- Simple, testable `_embed_query` helper.
+"""Purpose: unify multimodal query handling for LanceDB adapters.
+Why extend: support new modalities (audio, video) or adjust ANN tuning centrally.
+How extend: subclass `MultiModalSearcher` and override `_embed_query`, or add helper methods that decorate LanceDB queries before execution.
 """
 from __future__ import annotations
 
 import os
 import time
 from typing import Any, Optional
-import os
 
 import numpy as np
 import pandas as pd
 
-from src.embedding_runtime import (
-    get_text_embedder,
-    get_image_embedder,
-    get_lidar_embedder,
-)
-from src.ingest import _load_lidar_bytes
+from src.embedding_runtime import get_image_embedder, get_lidar_embedder, get_text_embedder
+from src.ingest import load_lidar_bytes
 
 
 def _call_query_method_preferring_class(q: Any, method: str, *args) -> Any:
-    """
-    Call a query method in a way that avoids instance-level monkey-patched recursion.
-
-    Strategy:
-    1) If the class defines the method, call the class method: q.__class__.method(q, *args)
-    2) Else, call q.method(*args)
-    3) On any error, return the original q (no-op chaining).
-    """
+    """Invoke a chained LanceDB query method while dodging recursive proxies."""
     try:
         cls = q.__class__
         orig = getattr(cls, method, None)
@@ -54,6 +35,8 @@ def _call_query_method_preferring_class(q: Any, method: str, *args) -> Any:
 
 
 class MultiModalSearcher:
+    """Wrap a LanceDB table with modality-aware embedding helpers."""
+
     def __init__(
         self,
         table: Any,
@@ -76,20 +59,18 @@ class MultiModalSearcher:
             if isinstance(query, (bytes, bytearray)):
                 vec = self.image_embedder.embed([bytes(query)])[0]
                 return vec.tolist()
-            with open(str(query), "rb") as f:
-                vec = self.image_embedder.embed([f.read()])[0]
+            with open(str(query), "rb") as fh:
+                vec = self.image_embedder.embed([fh.read()])[0]
                 return vec.tolist()
 
         if modality == "lidar":
             if isinstance(query, np.ndarray):
                 vec = self.lidar_embedder.embed([query])[0]
                 return vec.tolist()
-
-            # treat as file path
             path = str(query)
             _, ext = os.path.splitext(path)
-            with open(path, "rb") as f:
-                pts = _load_lidar_bytes(ext.lower(), f.read())
+            with open(path, "rb") as fh:
+                pts = load_lidar_bytes(ext.lower(), fh.read())
             vec = self.lidar_embedder.embed([pts])[0]
             return vec.tolist()
 
@@ -108,21 +89,17 @@ class MultiModalSearcher:
 
         q = self.table.search(vec)
 
-        # Distance metric selection: 'l2' | 'cosine' | 'dot'
-        # Map synonyms and fallbacks; 'dot' == 'cosine' for L2-normalized embeddings
-        m = (metric or os.getenv("LANCEDB_METRIC", "l2")).strip().lower()
-        if m in ("euclidean", "l2", "l2_distance"):
-            m_norm = "l2"
-        elif m in ("cos", "cosine"):
-            m_norm = "cosine"
-        elif m in ("dot", "ip", "inner_product", "dot_product"):
-            m_norm = "cosine"  # normalized embeddings → dot ≡ cosine
+        metric_key = (metric or os.getenv("LANCEDB_METRIC", "l2")).strip().lower()
+        if metric_key in {"euclidean", "l2", "l2_distance"}:
+            metric_name = "l2"
+        elif metric_key in {"cos", "cosine"}:
+            metric_name = "cosine"
+        elif metric_key in {"dot", "ip", "inner_product", "dot_product"}:
+            metric_name = "cosine"
         else:
-            m_norm = "l2"
-        q = _call_query_method_preferring_class(q, "metric", m_norm)
+            metric_name = "l2"
+        q = _call_query_method_preferring_class(q, "metric", metric_name)
 
-        # Improve recall when an IVF/PQ index is present
-        # Tunables via env with sensible defaults
         try:
             nprobes = int(os.getenv("LANCEDB_NPROBES", "32"))
         except Exception:
@@ -131,20 +108,18 @@ class MultiModalSearcher:
             refine = int(os.getenv("LANCEDB_REFINE_FACTOR", "50"))
         except Exception:
             refine = 50
-        if nprobes and nprobes > 0:
-            q = _call_query_method_preferring_class(q, "nprobes", int(nprobes))
-        if refine and refine > 0:
-            q = _call_query_method_preferring_class(q, "refine_factor", int(refine))
+        if nprobes > 0:
+            q = _call_query_method_preferring_class(q, "nprobes", nprobes)
+        if refine > 0:
+            q = _call_query_method_preferring_class(q, "refine_factor", refine)
 
         if where:
-            # keep your test’s capture variables up to date
             try:
                 setattr(self.table, "last_where", where)
             except Exception:
                 pass
             q = _call_query_method_preferring_class(q, "where", where)
 
-        # call class-level limit (avoids recursive instance proxy) and record last_limit
         q = _call_query_method_preferring_class(q, "limit", int(top_k))
         try:
             setattr(self.table, "last_limit", int(top_k))
